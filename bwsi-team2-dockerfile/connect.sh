@@ -22,6 +22,7 @@ PASSWORD="maze2024"
 if command -v sshpass >/dev/null 2>&1; then
     exec sshpass -p "$PASSWORD" \
         ssh \
+            -tt \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o LogLevel=ERROR \
@@ -31,6 +32,7 @@ else
     echo "sshpass not found — falling back to a manual password prompt."
     echo "Install sshpass (e.g. 'sudo apt install sshpass') for a seamless flow."
     exec ssh \
+        -tt \
         -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR \

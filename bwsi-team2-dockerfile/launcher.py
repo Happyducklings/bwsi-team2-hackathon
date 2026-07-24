@@ -35,8 +35,11 @@ IMAGE_NAME = os.environ.get("MAZE_IMAGE", "maze-wargame")
 # CONTAINER_NAME is computed per level in `container_name_for` so the
 # launcher can serve level1...level5 from the same image.
 
-# Host port that gets mapped to container port 22.
-HOST_PORT = os.environ.get("CONNECT_PORT", "2222")
+# Base host port that gets mapped to container port 22. Each level uses
+# BASE_HOST_PORT + (level - 1) so multiple levels can coexist without a
+# port collision. Override with the CONNECT_PORT env var to pin every
+# level to a single port (useful for scripted tests).
+BASE_HOST_PORT = int(os.environ.get("CONNECT_PORT", "2222"))
 DEFAULT_HOST = os.environ.get("CONNECT_HOST", "localhost")
 
 # Set MAZE_FORCE_REBUILD=1 to always rebuild, even if the image exists.
@@ -180,9 +183,45 @@ def launch_ssh_in_place(level: int = DEFAULT_LEVEL) -> int:
     # subprocess.call blocks until the SSH session exits. SSH inherits the
     # controlling TTY because we pass no stdin/stdout/stderr overrides, so
     # the player lands directly in the shell in this terminal.
-    return subprocess.call(
-        [str(CONNECT_SCRIPT), str(level), DEFAULT_HOST, HOST_PORT]
-    )
+    #
+    # ``start_new_session=True`` puts the child in a new session and process
+    # group. Without it, the child shares the parent's controlling TTY but
+    # is NOT the foreground process group, so reading from the terminal
+    # delivers SIGTTIN and SSH drops the connection immediately. This is
+    # what made the remote session "open then instantly close" on the
+    # first door reach.
+    #
+    # SSH (and the remote shell it spawns) calls ``tcsetpgrp`` to make
+    # itself the foreground process group of the TTY while the player is
+    # inside the challenge. When the SSH session exits, that foreground
+    # process group belongs to the now-dead child session. If we don't
+    # restore the foreground process group back to the launcher before
+    # returning, the orchestrator's subsequent ``input()`` /
+    # ``getpass.getpass()`` reads are delivered to a TTY whose foreground
+    # process group is dead, so the read either returns ``EIO`` or blocks
+    # forever. On the first door reach the launcher was the only reader
+    # so the symptom was masked; on the second door reach the maze loop
+    # needs to read input again and the broken TTY state manifests as
+    # "the password prompt never appears."
+    parent_pgid = os.getpgrp()
+    try:
+        return subprocess.call(
+            [str(CONNECT_SCRIPT), str(level), DEFAULT_HOST, HOST_PORT],
+            start_new_session=True,
+        )
+    finally:
+        # Reclaim the controlling TTY so the caller can read from it again.
+        # This is a no-op when stdin isn't a TTY (e.g. piped input).
+        try:
+            fd = sys.stdin.fileno()
+        except (AttributeError, ValueError, OSError):
+            fd = -1
+        if fd >= 0:
+            try:
+                os.tcsetpgrp(fd, parent_pgid)
+            except (OSError, PermissionError):
+                # Not a TTY, or we don't own it — nothing to restore.
+                pass
 
 
 def main(level: int = DEFAULT_LEVEL) -> int:
