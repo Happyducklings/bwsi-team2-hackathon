@@ -23,16 +23,22 @@
           <p class="panel-label">SECURE CHANNEL</p>
           <h2>Enter the blacksite.</h2>
           <p>
-            Solve computer challenges with your team, avoid the Beast, and reach the
-            extraction gate.
+            A hands-on briefing on how hackers think. Explore the map alone or with
+            a team, study each computer station to learn a core cybersecurity skill,
+            avoid the Beast, and reach the extraction gate.
           </p>
           <form id="join-form">
             <label for="display-name">OPERATIVE NAME</label>
             <div class="input-row">
               <input id="display-name" maxlength="20" autocomplete="nickname" required />
-              <button type="submit">JOIN LOBBY</button>
+              <button type="submit">ENTER</button>
             </div>
           </form>
+          <p class="download-note">
+            Ready for the real challenges?
+            <a href="https://github.com/Happyducklings/bwsi-team2-hackathon/tree/main"
+               target="_blank" rel="noopener noreferrer">Get the terminal CTF game on GitHub ↗</a>
+          </p>
         </div>
       </section>
 
@@ -43,8 +49,8 @@
             <strong id="objective">Await match start</strong>
           </div>
           <div class="hud-card">
-            <span>CTF PROGRESS</span>
-            <strong id="progress">0 / 2</strong>
+            <span>STATIONS STUDIED</span>
+            <strong id="progress">0 / 3</strong>
           </div>
           <div class="hud-card">
             <span>STATUS</span>
@@ -71,13 +77,16 @@
               <button id="restart-button" class="wide hidden">RETURN TO LOBBY</button>
             </div>
             <div class="panel terminal-list">
-              <p class="panel-label">NETWORK NODES</p>
+              <p class="panel-label">STUDY STATIONS</p>
               <div id="terminal-status"></div>
             </div>
             <div class="panel help-panel">
               <p class="panel-label">MISSION RULES</p>
-              <p>Reach a terminal and press E. Use its SSH command outside the browser.</p>
+              <p>Reach a station and press E to read its topic, then mark it reviewed.</p>
+              <p>Study enough stations to open the extraction gate.</p>
               <p>The Beast eliminates on contact. Eliminated operatives spectate.</p>
+              <p><a href="https://github.com/Happyducklings/bwsi-team2-hackathon/tree/main"
+                    target="_blank" rel="noopener noreferrer">↗ Get the terminal CTF game on GitHub</a></p>
             </div>
           </aside>
         </div>
@@ -86,21 +95,27 @@
 
     <dialog id="terminal-dialog">
       <button class="dialog-close" aria-label="Close">×</button>
-      <p class="panel-label">REMOTE TERMINAL</p>
-      <h2 id="challenge-title"></h2>
-      <p id="challenge-state"></p>
-      <label>SSH CONNECTION</label>
-      <div class="copy-row">
-        <code id="ssh-command"></code>
-        <button id="copy-ssh" type="button">COPY</button>
+      <p class="panel-label" id="topic-category">STUDY STATION</p>
+      <h2 id="topic-title"></h2>
+      <p id="topic-summary" class="topic-summary"></p>
+      <div id="topic-body" class="topic-body"></div>
+      <label>FURTHER READING</label>
+      <ul id="topic-reading" class="reading-list"></ul>
+      <div class="dialog-actions">
+        <button id="study-button" type="button">MARK REVIEWED</button>
       </div>
-      <form id="flag-form">
-        <label for="flag-input">SUBMIT FLAG</label>
-        <div class="input-row">
-          <input id="flag-input" autocomplete="off" maxlength="200" />
-          <button type="submit">VERIFY</button>
-        </div>
-      </form>
+    </dialog>
+
+    <dialog id="complete-dialog">
+      <button class="dialog-close" id="complete-close" aria-label="Close">×</button>
+      <p class="panel-label">EXTRACTION COMPLETE</p>
+      <h2>You made it out. 🎉</h2>
+      <p>
+        You've studied the field and reached the gate. Now put it into practice —
+        the real challenges are waiting in the terminal CTF game.
+      </p>
+      <a class="cta" href="https://github.com/Happyducklings/bwsi-team2-hackathon/tree/main"
+         target="_blank" rel="noopener noreferrer">↗ Get the terminal CTF game on GitHub</a>
     </dialog>
 
     <div id="toast" role="status" aria-live="polite"></div>

@@ -115,12 +115,14 @@ async function api(request, response, url) {
     case "/api/interact":
       result = game.interact(data.playerId);
       break;
-    case "/api/flag": {
-      result = game.submitFlag(data.playerId, data.challengeId, data.flag);
+    case "/api/study": {
+      result = game.studyTopic(data.playerId, data.topicId);
       notice(
         data.playerId,
-        result.correct ? "Correct flag! Team progress updated." : "Incorrect flag. Try again.",
-        result.correct ? "success" : "danger",
+        result.alreadyStudied
+          ? "Station already reviewed by the team."
+          : "Station reviewed! Team progress updated.",
+        "success",
       );
       break;
     }

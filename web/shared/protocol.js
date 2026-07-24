@@ -31,6 +31,5 @@ export const DIRECTIONS = Object.freeze({
 
 export const LIMITS = Object.freeze({
   MAX_NAME_LENGTH: 20,
-  MAX_FLAG_LENGTH: 200,
   INTERACTION_DISTANCE: 1,
 });

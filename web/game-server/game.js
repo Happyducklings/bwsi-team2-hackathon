@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { CHALLENGES, publicChallenge } from "./challenges.js";
+import { TOPICS, publicTopic } from "./topics.js";
 import { LIMITS, MATCH_PHASES, PLAYER_STATES } from "../shared/protocol.js";
 
 export const MAP = Object.freeze({
@@ -9,9 +9,11 @@ export const MAP = Object.freeze({
   beastSpawn: { x: 20, y: 12 },
   exit: { x: 22, y: 7 },
   terminals: [
-    { id: "terminal-alpha", challengeId: "linux-basics", x: 4, y: 12 },
-    { id: "terminal-beta", challengeId: "log-hunt", x: 12, y: 2 },
-    { id: "terminal-gamma", challengeId: "permissions", x: 18, y: 10 },
+    { id: "terminal-alpha", topicId: "crypto-stego", x: 4, y: 12 },
+    { id: "terminal-beta", topicId: "re-binexp", x: 12, y: 2 },
+    { id: "terminal-gamma", topicId: "network-analysis", x: 18, y: 10 },
+    { id: "terminal-delta", topicId: "osint", x: 21, y: 2 },
+    { id: "terminal-epsilon", topicId: "cyber-careers", x: 2, y: 7 },
   ],
   patrol: [
     { x: 20, y: 12 },
@@ -111,9 +113,9 @@ export class Game {
   reset() {
     this.phase = MATCH_PHASES.LOBBY;
     this.players = new Map();
-    this.completedChallenges = new Set();
-    this.challengeWorkers = new Map();
-    this.requiredChallenges = 2;
+    this.studiedTopics = new Set();
+    // Require a majority of stations so both solo and team play stay winnable.
+    this.requiredTopics = 3;
     this.winner = null;
     this.startedAt = null;
     this.finishReason = null;
@@ -172,6 +174,7 @@ export class Game {
   start(playerId) {
     this.requirePlayer(playerId);
     if (this.phase !== MATCH_PHASES.LOBBY) throw new Error("The match is not in the lobby.");
+    // A single operative may run the mission solo; teams are supported too.
     if (this.players.size < 1) throw new Error("At least one player is required.");
     this.phase = MATCH_PHASES.STARTING;
     this.startedAt = this.now() + START_COUNTDOWN_MS;
@@ -221,14 +224,12 @@ export class Game {
       (candidate) => distance(player, candidate) <= LIMITS.INTERACTION_DISTANCE,
     );
     if (terminal) {
-      this.challengeWorkers.set(terminal.challengeId, player.id);
-      const challenge = CHALLENGES.find((candidate) => candidate.id === terminal.challengeId);
+      const topic = TOPICS.find((candidate) => candidate.id === terminal.topicId);
       return {
         kind: "terminal",
-        challenge: {
-          ...publicChallenge(challenge),
-          completed: this.completedChallenges.has(challenge.id),
-          workerName: player.name,
+        topic: {
+          ...publicTopic(topic),
+          studied: this.studiedTopics.has(topic.id),
         },
       };
     }
@@ -241,29 +242,26 @@ export class Game {
     throw new Error("Move next to a computer or the exit first.");
   }
 
-  submitFlag(playerId, challengeId, rawFlag) {
+  studyTopic(playerId, topicId) {
     const player = this.requireLivingPlayer(playerId);
     if (![MATCH_PHASES.PLAYING, MATCH_PHASES.EXIT_UNLOCKED].includes(this.phase)) {
-      throw new Error("Flags cannot be submitted right now.");
+      throw new Error("Stations cannot be reviewed right now.");
     }
-    const terminal = MAP.terminals.find((candidate) => candidate.challengeId === challengeId);
+    const terminal = MAP.terminals.find((candidate) => candidate.topicId === topicId);
     if (!terminal || distance(player, terminal) > LIMITS.INTERACTION_DISTANCE) {
-      throw new Error("Stay beside that computer to submit its flag.");
+      throw new Error("Stay beside that computer to review it.");
     }
-    const challenge = CHALLENGES.find((candidate) => candidate.id === challengeId);
-    if (!challenge) throw new Error("Unknown challenge.");
-    if (this.completedChallenges.has(challengeId)) {
-      return { correct: true, alreadyCompleted: true };
+    const topic = TOPICS.find((candidate) => candidate.id === topicId);
+    if (!topic) throw new Error("Unknown station.");
+    if (this.studiedTopics.has(topicId)) {
+      return { studied: true, alreadyStudied: true };
     }
-    const flag = String(rawFlag || "").trim().slice(0, LIMITS.MAX_FLAG_LENGTH);
-    if (!flag || flag !== challenge.flag) return { correct: false };
 
-    this.completedChallenges.add(challengeId);
-    this.challengeWorkers.delete(challengeId);
-    if (this.completedChallenges.size >= this.requiredChallenges) {
+    this.studiedTopics.add(topicId);
+    if (this.studiedTopics.size >= this.requiredTopics && this.phase === MATCH_PHASES.PLAYING) {
       this.phase = MATCH_PHASES.EXIT_UNLOCKED;
     }
-    return { correct: true, alreadyCompleted: false };
+    return { studied: true, alreadyStudied: false };
   }
 
   tickBeast() {
@@ -303,9 +301,6 @@ export class Game {
     );
     for (const player of eliminated) {
       player.state = PLAYER_STATES.ELIMINATED;
-      this.challengeWorkers.forEach((workerId, challengeId) => {
-        if (workerId === player.id) this.challengeWorkers.delete(challengeId);
-      });
     }
     this.checkDefeat();
     return eliminated.map((player) => player.id);
@@ -328,8 +323,7 @@ export class Game {
     const players = [...this.players.values()].filter((player) => player.connected);
     this.players = new Map(players.map((player) => [player.id, player]));
     this.phase = MATCH_PHASES.LOBBY;
-    this.completedChallenges.clear();
-    this.challengeWorkers.clear();
+    this.studiedTopics.clear();
     this.winner = null;
     this.startedAt = null;
     this.finishReason = null;
@@ -364,28 +358,26 @@ export class Game {
     const viewer = this.players.get(viewerId);
     return {
       phase: this.phase,
-      requiredChallenges: this.requiredChallenges,
-      completedChallenges: [...this.completedChallenges],
+      requiredTopics: this.requiredTopics,
+      studiedTopics: [...this.studiedTopics],
       winner: this.winner,
       finishReason: this.finishReason,
       viewerId,
       viewerState: viewer?.state || null,
       map: {
         ...MAP,
-        terminals: MAP.terminals.map((terminal) => {
-          const worker = this.players.get(this.challengeWorkers.get(terminal.challengeId));
-          return {
-            ...terminal,
-            completed: this.completedChallenges.has(terminal.challengeId),
-            workerName: worker?.name || null,
-          };
-        }),
+        terminals: MAP.terminals.map((terminal) => ({
+          ...terminal,
+          studied: this.studiedTopics.has(terminal.topicId),
+        })),
       },
       players: [...this.players.values()].map((player) => ({ ...player })),
       beast: { ...this.beast },
-      challenges: CHALLENGES.map((challenge) => ({
-        ...publicChallenge(challenge),
-        completed: this.completedChallenges.has(challenge.id),
+      topics: TOPICS.map((topic) => ({
+        id: topic.id,
+        category: topic.category,
+        title: topic.title,
+        studied: this.studiedTopics.has(topic.id),
       })),
     };
   }

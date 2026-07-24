@@ -17,12 +17,14 @@ const elements = {
   centerMessage: document.querySelector("#center-message"),
   dialog: document.querySelector("#terminal-dialog"),
   dialogClose: document.querySelector(".dialog-close"),
-  challengeTitle: document.querySelector("#challenge-title"),
-  challengeState: document.querySelector("#challenge-state"),
-  sshCommand: document.querySelector("#ssh-command"),
-  copySsh: document.querySelector("#copy-ssh"),
-  flagForm: document.querySelector("#flag-form"),
-  flagInput: document.querySelector("#flag-input"),
+  topicCategory: document.querySelector("#topic-category"),
+  topicTitle: document.querySelector("#topic-title"),
+  topicSummary: document.querySelector("#topic-summary"),
+  topicBody: document.querySelector("#topic-body"),
+  topicReading: document.querySelector("#topic-reading"),
+  studyButton: document.querySelector("#study-button"),
+  completeDialog: document.querySelector("#complete-dialog"),
+  completeClose: document.querySelector("#complete-close"),
   toast: document.querySelector("#toast"),
 };
 
@@ -30,9 +32,10 @@ const context = elements.canvas.getContext("2d");
 let playerId = sessionStorage.getItem("beast-player-id");
 let state = null;
 let events = null;
-let activeChallenge = null;
+let activeTopic = null;
 let moving = false;
 let toastTimer = null;
+let completionShown = false;
 
 async function request(path, data = {}) {
   const response = await fetch(path, {
@@ -104,11 +107,11 @@ function phaseLabel(phase) {
 }
 
 function objectiveText() {
-  if (state.phase === "lobby") return "Assemble the team and start";
+  if (state.phase === "lobby") return "Enter the map alone or with a team";
   if (state.phase === "starting") return "Prepare for deployment";
-  if (state.phase === "playing") return "Complete CTF nodes and avoid the Beast";
+  if (state.phase === "playing") return "Study stations and avoid the Beast";
   if (state.phase === "exit-unlocked") return "Reach the extraction gate";
-  if (state.finishReason === "escaped") return "A survivor escaped — team victory";
+  if (state.finishReason === "escaped") return "A survivor escaped — mission complete";
   return "All survivors eliminated — mission failed";
 }
 
@@ -118,7 +121,7 @@ function render() {
   elements.phaseChip.textContent = phaseLabel(state.phase);
   elements.objective.textContent = objectiveText();
   elements.progress.textContent =
-    `${state.completedChallenges.length} / ${state.requiredChallenges}`;
+    `${state.studiedTopics.length} / ${state.requiredTopics}`;
   elements.playerStatus.textContent = (player?.state || "disconnected").toUpperCase();
   elements.playerStatus.style.color =
     player?.state === "alive" ? "var(--green)" : player?.state === "escaped" ? "var(--cyan)" : "var(--red)";
@@ -146,15 +149,15 @@ function render() {
   elements.terminalStatus.replaceChildren(
     ...state.map.terminals.map((terminal) => {
       const row = document.createElement("div");
-      row.className = `terminal-row ${terminal.completed ? "complete" : terminal.workerName ? "active" : ""}`;
-      const challenge = state.challenges.find((item) => item.id === terminal.challengeId);
+      row.className = `terminal-row ${terminal.studied ? "complete" : ""}`;
+      const topic = state.topics.find((item) => item.id === terminal.topicId);
       const icon = document.createElement("span");
-      icon.textContent = terminal.completed ? "✓" : terminal.workerName ? "◉" : "◇";
+      icon.textContent = terminal.studied ? "✓" : "◇";
       const title = document.createElement("span");
-      title.textContent = challenge?.title || terminal.challengeId;
+      title.textContent = topic?.category || terminal.topicId;
       const meta = document.createElement("span");
       meta.className = "row-meta";
-      meta.textContent = terminal.completed ? "DONE" : terminal.workerName || "IDLE";
+      meta.textContent = terminal.studied ? "STUDIED" : "UNREAD";
       row.append(icon, title, meta);
       return row;
     }),
@@ -163,12 +166,26 @@ function render() {
   renderMap();
   renderOverlay();
 
-  if (activeChallenge) {
-    const latest = state.challenges.find((challenge) => challenge.id === activeChallenge.id);
-    if (latest?.completed) {
-      elements.challengeState.textContent = "Challenge completed by the team.";
-      elements.flagInput.disabled = true;
-    }
+  if (activeTopic) {
+    const latest = state.topics.find((topic) => topic.id === activeTopic.id);
+    if (latest?.studied) markTopicStudiedInDialog();
+  }
+
+  maybeShowCompletion();
+}
+
+function maybeShowCompletion() {
+  // Reset the one-shot when a new match returns to the lobby.
+  if (state.phase === "lobby") {
+    completionShown = false;
+    if (elements.completeDialog.open) elements.completeDialog.close();
+    return;
+  }
+  const escaped = state.phase === "finished" && state.finishReason === "escaped";
+  if (escaped && !completionShown) {
+    completionShown = true;
+    if (elements.dialog.open) elements.dialog.close();
+    if (!elements.completeDialog.open) elements.completeDialog.showModal();
   }
 }
 
@@ -210,11 +227,11 @@ function renderMap() {
   context.fillText("E", (map.exit.x + 0.5) * cell, (map.exit.y + 0.68) * cell);
 
   for (const terminal of map.terminals) {
-    context.fillStyle = terminal.completed ? "#78f7b3" : terminal.workerName ? "#ffd166" : "#46e0ff";
+    context.fillStyle = terminal.studied ? "#78f7b3" : "#46e0ff";
     context.fillRect(terminal.x * cell + 5, terminal.y * cell + 7, cell - 10, cell - 14);
     context.fillStyle = "#07101a";
     context.fillRect(terminal.x * cell + 9, terminal.y * cell + 11, cell - 18, cell - 24);
-    context.fillStyle = terminal.completed ? "#78f7b3" : "#46e0ff";
+    context.fillStyle = terminal.studied ? "#78f7b3" : "#46e0ff";
     context.fillRect(terminal.x * cell + 10, terminal.y * cell + cell - 9, cell - 20, 3);
   }
 
@@ -269,21 +286,47 @@ function renderOverlay() {
   elements.centerMessage.classList.toggle("hidden", !message);
 }
 
+function markTopicStudiedInDialog() {
+  elements.studyButton.disabled = true;
+  elements.studyButton.textContent = "REVIEWED ✓";
+}
+
 async function interact() {
   try {
     const result = await request("/api/interact", { playerId });
     if (result.kind === "exit") {
-      showToast(result.unlocked ? "Exit open. Step onto the gate." : "Exit locked. Complete more CTFs.");
+      showToast(
+        result.unlocked ? "Exit open. Step onto the gate." : "Exit locked. Study more stations.",
+      );
       return;
     }
-    activeChallenge = result.challenge;
-    elements.challengeTitle.textContent = result.challenge.title;
-    elements.challengeState.textContent = result.challenge.completed
-      ? "Challenge completed by the team."
-      : "Open a local terminal, connect over SSH, and recover the flag.";
-    elements.sshCommand.textContent = result.challenge.ssh;
-    elements.flagInput.value = "";
-    elements.flagInput.disabled = result.challenge.completed;
+    const topic = result.topic;
+    activeTopic = topic;
+    elements.topicCategory.textContent = topic.category;
+    elements.topicTitle.textContent = topic.title;
+    elements.topicSummary.textContent = topic.summary;
+    elements.topicBody.replaceChildren(
+      ...topic.body.map((paragraph) => {
+        const p = document.createElement("p");
+        p.textContent = paragraph;
+        return p;
+      }),
+    );
+    elements.topicReading.replaceChildren(
+      ...topic.reading.map((link) => {
+        const item = document.createElement("li");
+        const anchor = document.createElement("a");
+        anchor.href = link.url;
+        anchor.textContent = link.label;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        item.append(anchor);
+        return item;
+      }),
+    );
+    elements.studyButton.disabled = false;
+    elements.studyButton.textContent = "MARK REVIEWED";
+    if (topic.studied) markTopicStudiedInDialog();
     elements.dialog.showModal();
   } catch (error) {
     showToast(error.message, "danger");
@@ -334,39 +377,21 @@ elements.restartButton.addEventListener("click", async () => {
 });
 
 elements.dialogClose.addEventListener("click", () => elements.dialog.close());
-elements.dialog.addEventListener("close", () => { activeChallenge = null; });
+elements.dialog.addEventListener("close", () => { activeTopic = null; });
+elements.completeClose.addEventListener("click", () => elements.completeDialog.close());
 
-elements.copySsh.addEventListener("click", async () => {
+elements.studyButton.addEventListener("click", async () => {
+  if (!activeTopic) return;
   try {
-    await navigator.clipboard.writeText(elements.sshCommand.textContent);
-    showToast("SSH command copied.", "success");
-  } catch {
-    showToast("Copy unavailable. Select the command manually.", "danger");
-  }
-});
-
-elements.flagForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (!activeChallenge) return;
-  try {
-    const result = await request("/api/flag", {
-      playerId,
-      challengeId: activeChallenge.id,
-      flag: elements.flagInput.value,
-    });
-    if (result.correct) {
-      elements.challengeState.textContent = "Challenge completed by the team.";
-      elements.flagInput.disabled = true;
-    } else {
-      elements.flagInput.select();
-    }
+    await request("/api/study", { playerId, topicId: activeTopic.id });
+    markTopicStudiedInDialog();
   } catch (error) {
     showToast(error.message, "danger");
   }
 });
 
 window.addEventListener("keydown", (event) => {
-  if (elements.dialog.open || event.target.matches("input")) return;
+  if (elements.dialog.open || elements.completeDialog.open || event.target.matches("input")) return;
   if (DIRECTIONS[event.code]) {
     event.preventDefault();
     move(DIRECTIONS[event.code]);
