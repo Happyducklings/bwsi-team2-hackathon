@@ -15,7 +15,7 @@ static void transform(char *buf, size_t len)
 
 int main(void)
 {
-    char flag[] = "1nv35t1g4t1v3_R3v3rs3r!";
+    char flag[] = "HWM{1nv35t1g4t1v3_R3v3rs3r!}";
     size_t n = strlen(flag);
 
     transform(flag, n);
