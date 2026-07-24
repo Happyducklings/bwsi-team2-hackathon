@@ -1,0 +1,3 @@
+Run the mystery binary and see what it prints. It's a bit garbled...
+It also happens to be its own decryptor. Feed its output back through
+the same transformation and see what comes out.

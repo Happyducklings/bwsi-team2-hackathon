@@ -1,7 +1,10 @@
+import getpass
+import importlib.util
 import os
 import random
 import sys
 from collections import defaultdict, deque
+from pathlib import Path
 
 WALL = "#"
 FLOOR = "."
@@ -580,6 +583,27 @@ LEVEL_MAPS = [
         list("#@......!........#"),
         list("##################"),
     ],
+    [
+        list("####################"),
+        list("#..K...............D"),
+        list("#..#..#..#.....#...#"),
+        list("#..#.....#..#..#...#"),
+        list("#..#..!..#.!.......#"),
+        list("#........#.........#"),
+        list("#..................#"),
+        list("#..###..#..#..#..#.#"),
+        list("#..........#..#....#"),
+        list("#.....!............#"),
+        list("#..#..#..#..#..#...#"),
+        list("#..#.....#..#......#"),
+        list("#..........!.......#"),
+        list("#..................#"),
+        list("#..#..#..#..#..#...#"),
+        list("#..#.....#.....#...#"),
+        list("#.....!............#"),
+        list("#@.................#"),
+        list("####################"),
+    ],
 ]
 
 # Each level owns its map, items, and optional enemy configuration.
@@ -611,6 +635,7 @@ LEVELS = [
     LevelDefinition("Level 3", LEVEL_MAPS[2]),
     LevelDefinition("Level 4", LEVEL_MAPS[3]),
     LevelDefinition("Level 5", LEVEL_MAPS[4]),
+    LevelDefinition("Level 6", LEVEL_MAPS[5]),
 ]
 
 # Add or edit trivia questions here. The answer is the number of the correct choice.
@@ -666,6 +691,132 @@ TRIVIA_QUESTIONS = [
         "answer": 4,
     },
 ]
+
+
+LEVEL_PASSWORDS = {
+    1: "HWM{1927}",
+    2: "HWM{R3v3rs3d_5ucc3ss}",
+    3: "HWM{Simon_has_cookies?}",
+    4: "HWM{Y0u_g0t_this!}",
+    5: "HWM{1nv35t1g4t1v3_R3v3rs3r!}",
+    6: "HWM{M@k3_1t_th3_b35t_d@y}",
+}
+
+LAUNCHER_PATH = (
+    Path(__file__).resolve().parent
+    / "bwsi-team2-dockerfile"
+    / "launcher.py"
+)
+
+
+def _load_launcher():
+    """Load the Docker/SSH launcher lazily from the project directory."""
+    spec = importlib.util.spec_from_file_location(
+        "bwsi_team2_launcher",
+        LAUNCHER_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load launcher spec from {LAUNCHER_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _check_door_password(entered, level_number):
+    """Return whether an entered flag exactly unlocks a known level."""
+    expected = LEVEL_PASSWORDS.get(level_number)
+    return expected is not None and entered == expected
+
+
+def _challenge_allows_level_completion(result):
+    """Fail closed: only a literal True completes the challenge."""
+    return result is True
+
+
+def _read_door_password(level_number):
+    """Read a hidden password when possible, with a non-TTY fallback."""
+    prompt = f"Enter the Level {level_number} password to proceed: "
+    try:
+        return getpass.getpass(prompt).strip()
+    except (ValueError, getpass.GetPassWarning):
+        print(
+            "[launcher] (No TTY available — password will be visible.)",
+            file=sys.stderr,
+        )
+        return input(prompt).strip()
+
+
+def run_door_challenge(level_number, player_state, *, first_attempt=True):
+    """Run a level's Docker/SSH challenge and require its recovered flag."""
+    del player_state  # Reserved for future challenge rewards/state.
+
+    try:
+        launcher = _load_launcher()
+    except (FileNotFoundError, ImportError) as error:
+        print(
+            f"[launcher] Could not load the Docker launcher from "
+            f"{LAUNCHER_PATH}: {error}",
+            file=sys.stderr,
+        )
+        print(
+            "[launcher] The challenge cannot start, so this level remains "
+            "locked.",
+            file=sys.stderr,
+        )
+        return False
+
+    first_time = first_attempt
+    while True:
+        clear_screen()
+        if first_time:
+            launcher.wait_for_keypress(level=level_number)
+        first_time = False
+
+        if launcher.build_image(level=level_number) != 0:
+            return False
+        if launcher.start_container(level=level_number) != 0:
+            return False
+        if not launcher.wait_for_ssh():
+            print(
+                f"[launcher] SSH port never came up for level {level_number}.",
+                file=sys.stderr,
+            )
+            return False
+
+        try:
+            ssh_rc = launcher.launch_ssh_in_place(level=level_number)
+        except KeyboardInterrupt:
+            print(
+                "\n[launcher] SSH challenge canceled; the level remains locked."
+            )
+            return False
+
+        if ssh_rc < 0:
+            print(
+                f"[launcher] SSH challenge was interrupted (exit code "
+                f"{ssh_rc}). The level remains locked.",
+                file=sys.stderr,
+            )
+            return False
+
+        clear_screen()
+        print("=" * 60)
+        print("  You have left the challenge container.")
+        print(f"  Enter the Level {level_number} password to proceed.")
+        print("=" * 60)
+
+        try:
+            entered = _read_door_password(level_number)
+        except (EOFError, KeyboardInterrupt):
+            print(
+                "\n[launcher] Challenge canceled; the level remains locked."
+            )
+            return False
+
+        if _check_door_password(entered, level_number):
+            return True
+
+        print("Incorrect password. Reconnecting to the challenge...")
 
 
 def clear_screen():
@@ -1517,7 +1668,21 @@ def play_level(level_number, player_state):
             continue
 
         if command == "sheepy":
-            return "complete"
+            clear_screen()
+            print(
+                f"Debug shortcut: opening Level {level_number}'s challenge..."
+            )
+            challenge_complete = run_door_challenge(
+                level_number,
+                player_state,
+                first_attempt=True,
+            )
+            if _challenge_allows_level_completion(challenge_complete):
+                return "complete"
+            message = (
+                "The challenge was not completed. The level remains locked."
+            )
+            continue
 
         if command == "l":
             if player_state.upgrades["lamp"] == 0:
@@ -1770,7 +1935,23 @@ def play_level(level_number, player_state):
                 break
 
         if level_complete:
-            return "complete"
+            clear_screen()
+            print(
+                f"You step through the door into Level "
+                f"{level_number}'s challenge..."
+            )
+            challenge_complete = run_door_challenge(
+                level_number,
+                player_state,
+                first_attempt=True,
+            )
+            if _challenge_allows_level_completion(challenge_complete):
+                return "complete"
+            message = (
+                "The challenge was not completed. The door remains locked; "
+                "step away and return when you are ready to try again."
+            )
+            continue
 
         if not player_was_defeated:
             died, enemy_messages = move_enemies_toward_player(
@@ -1804,7 +1985,7 @@ def run_self_tests():
     """Run deterministic checks for game systems and scripted gameplay."""
     import contextlib
     import io
-    from unittest.mock import patch
+    from unittest.mock import MagicMock, patch
 
     passed = 0
     failures = []
@@ -1824,6 +2005,7 @@ def run_self_tests():
 
     def test_levels_items_and_enemies():
         enemy_names = set()
+        assert len(LEVELS) == 6
 
         for level_number in range(1, len(LEVELS) + 1):
             (
@@ -2073,7 +2255,11 @@ def run_self_tests():
             list("#.!.#"),
             list("#####"),
         ]
-        question = TRIVIA_QUESTIONS[0]
+        question = {
+            "question": "Self-test question",
+            "choices": ["Wrong", "Correct", "Wrong", "Wrong"],
+            "answer": 2,
+        }
         with patch.object(random, "choice", return_value=question), patch(
             "builtins.input", side_effect=["1"]
         ), contextlib.redirect_stdout(io.StringIO()):
@@ -2172,7 +2358,11 @@ def run_self_tests():
         assert apply_trivia_hit(trivia_enemy)
 
     def test_sword_trivia_gate():
-        question = TRIVIA_QUESTIONS[0]
+        question = {
+            "question": "Self-test question",
+            "choices": ["Wrong", "Correct", "Wrong", "Wrong"],
+            "answer": 2,
+        }
         player_state = PlayerState()
         PowerUp("Sword", "Self-test sword.", "sword").collect(player_state)
         player_state.start_level()
@@ -2350,6 +2540,37 @@ def run_self_tests():
         assert choice_state.upgrades["lamp"] == 1
         assert sum(choice_state.upgrades.values()) == 2
 
+    def test_docker_challenge_gate():
+        launcher = MagicMock()
+        launcher.build_image.return_value = 0
+        launcher.start_container.return_value = 0
+        launcher.wait_for_ssh.return_value = True
+        launcher.launch_ssh_in_place.return_value = 0
+
+        with patch(
+            "builtins.input",
+            return_value="",
+        ), patch.object(
+            sys.modules[__name__],
+            "_load_launcher",
+            return_value=launcher,
+        ), patch.object(
+            sys.modules[__name__],
+            "_read_door_password",
+            side_effect=["wrong", LEVEL_PASSWORDS[1]],
+        ), contextlib.redirect_stdout(io.StringIO()):
+            result = run_door_challenge(1, PlayerState())
+
+        assert result is True
+        assert launcher.launch_ssh_in_place.call_count == 2
+        assert _check_door_password(LEVEL_PASSWORDS[6], 6)
+        assert not _check_door_password("wrong", 6)
+        assert not _check_door_password("anything", 99)
+        assert _challenge_allows_level_completion(True)
+        for rejected in (False, None, "complete", 1):
+            assert not _challenge_allows_level_completion(rejected)
+        assert LAUNCHER_PATH.exists()
+
     tests = [
         ("level validation, items, and enemy types", test_levels_items_and_enemies),
         ("content extension registries", test_content_extension_points),
@@ -2362,6 +2583,7 @@ def run_self_tests():
         ("movement, rest, Speed, and lamp", test_movement_rest_speed_and_lamp),
         ("death reset and retained discovery", test_death_reset_and_discovery),
         ("debug console and upgrade choices", test_debug_console_and_upgrade_choice),
+        ("Docker/SSH challenge gate", test_docker_challenge_gate),
     ]
 
     print("HIDDEN WALL MAZE - SELF TEST")
@@ -2397,7 +2619,7 @@ def main():
             print(f"Starting level {level_number + 1}.")
             continue
 
-    print("You completed all five levels. You win!")
+    print(f"You completed all {len(LEVELS)} levels. You win!")
 
 
 if __name__ == "__main__":
