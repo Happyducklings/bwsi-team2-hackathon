@@ -24,14 +24,16 @@ HERE = Path(__file__).resolve().parent
 DOCKERFILE = HERE / "Dockerfile"
 CONNECT_SCRIPT = HERE / "connect.sh"
 
-# The level the player is about to enter. Today this is hard-coded to 1;
-# the maze orchestrator will eventually set this dynamically.
-CURRENT_LEVEL = 1
+# The level the player is about to enter. The maze orchestrator passes the
+# current level as a function argument; this is the default for when the
+# launcher is invoked as a standalone script.
+DEFAULT_LEVEL = 1
 
 # Image / container naming. Keep these stable so we can detect an existing
 # image and skip rebuilding.
 IMAGE_NAME = os.environ.get("MAZE_IMAGE", "maze-wargame")
-CONTAINER_NAME = os.environ.get("MAZE_CONTAINER", f"maze-level{CURRENT_LEVEL}")
+# CONTAINER_NAME is computed per level in `container_name_for` so the
+# launcher can serve level1...level5 from the same image.
 
 # Host port that gets mapped to container port 22.
 HOST_PORT = os.environ.get("CONNECT_PORT", "2222")
@@ -41,13 +43,26 @@ DEFAULT_HOST = os.environ.get("CONNECT_HOST", "localhost")
 FORCE_REBUILD = os.environ.get("MAZE_FORCE_REBUILD", "0") == "1"
 
 
-def wait_for_keypress() -> None:
-    """Block until the user presses Enter, then return."""
+def container_name_for(level: int) -> str:
+    """Return the per-level container name; honors MAZE_CONTAINER override."""
+    override = os.environ.get("MAZE_CONTAINER")
+    if override:
+        return override
+    return f"maze-level{level}"
+
+
+def wait_for_keypress(level: int = DEFAULT_LEVEL) -> None:
+    """Block until the user presses Enter, then return.
+
+    The caller decides when to use this: the maze orchestrator shows it only
+    the first time the door is reached, not on every retry, so a wrong
+    password doesn't require an extra ENTER before reconnecting.
+    """
     print()
     print("==============================================")
     print("  A door lies before you...")
     print("  Press ENTER to build & open the Level "
-          f"{CURRENT_LEVEL} docker terminal.")
+          f"{level} docker terminal.")
     print("==============================================")
     try:
         input()
@@ -71,8 +86,13 @@ def image_exists() -> bool:
     return result.returncode == 0
 
 
-def build_image() -> int:
-    """Build the Docker image, unless it already exists and rebuild isn't forced."""
+def build_image(level: int = DEFAULT_LEVEL) -> int:
+    """Build the Docker image, unless it already exists and rebuild isn't forced.
+
+    The level argument is accepted for symmetry with the other entry points;
+    the image is the same for all levels today, so the level only affects
+    logging.
+    """
     if not FORCE_REBUILD and image_exists():
         print(f"[launcher] Image '{IMAGE_NAME}' already exists — skipping build.")
         print("[launcher] (set MAZE_FORCE_REBUILD=1 to force a rebuild.)")
@@ -92,23 +112,24 @@ def build_image() -> int:
     )
 
 
-def start_container() -> int:
+def start_container(level: int = DEFAULT_LEVEL) -> int:
     """Start the per-level container, recreating it if one is already running.
 
     ``docker run --rm`` would be simpler, but we want a stable name so the SSH
     script (and the player) can reach it predictably across doors.
     """
+    container_name = container_name_for(level)
     # If a previous container with this name exists, remove it so we can
     # re-publish the port cleanly.
     subprocess.run(
-        ["docker", "rm", "-f", CONTAINER_NAME],
+        ["docker", "rm", "-f", container_name],
         capture_output=True,
     )
 
     return run(
         [
             "docker", "run", "-d",
-            "--name", CONTAINER_NAME,
+            "--name", container_name,
             "-p", f"{HOST_PORT}:22",
             IMAGE_NAME,
         ]
@@ -132,53 +153,50 @@ def wait_for_ssh(timeout_seconds: int = 30) -> bool:
     return False
 
 
-def launch_ssh_in_place() -> int:
-    """Replace this Python process with the SSH session in the current terminal.
+def launch_ssh_in_place(level: int = DEFAULT_LEVEL) -> int:
+    """Run the SSH session in the current terminal as a child process.
 
-    We use ``os.execvp`` rather than ``subprocess.call`` so the SSH client
-    inherits the controlling TTY directly. That keeps resize/line-editing/
-    Ctrl-C working normally inside the same window the player already has.
+    ``connect.sh`` itself does ``exec ssh``, so the foreground process is
+    still ssh; ``subprocess.call`` adds one short-lived Python layer that
+    returns to the caller the moment the player types ``exit`` inside the
+    shell. That round-trip is what lets the maze orchestrator (game v2.py)
+    ask for the level password after the SSH session ends.
     """
     if not CONNECT_SCRIPT.exists():
         print(f"[launcher] connect.sh not found at {CONNECT_SCRIPT}", file=sys.stderr)
         return 1
 
     if not wait_for_ssh():
+        container_name = container_name_for(level)
         print(f"[launcher] SSH port {HOST_PORT} never came up. Check 'docker logs "
-              f"{CONTAINER_NAME}'.", file=sys.stderr)
+              f"{container_name}'.", file=sys.stderr)
         return 1
 
-    print(f"[launcher] Connecting to {DEFAULT_HOST}:{HOST_PORT} as level{CURRENT_LEVEL} "
+    print(f"[launcher] Connecting to {DEFAULT_HOST}:{HOST_PORT} as level{level} "
           "in this terminal...")
-    print("[launcher] (type 'exit' to leave the maze and return to the launcher.)")
+    print("[launcher] (type 'exit' to leave the challenge and return to the maze.)")
     print()
 
-    # execvp replaces the launcher process with connect.sh, which in turn
-    # execs ssh. The terminal stays put; only the foreground process changes.
-    try:
-        os.execvp(
-            str(CONNECT_SCRIPT),
-            [str(CONNECT_SCRIPT), str(CURRENT_LEVEL), DEFAULT_HOST, HOST_PORT],
-        )
-    except OSError as exc:
-        print(f"[launcher] Failed to exec connect.sh: {exc}", file=sys.stderr)
-        return 1
-    # execvp only returns on failure.
-    return 1
+    # subprocess.call blocks until the SSH session exits. SSH inherits the
+    # controlling TTY because we pass no stdin/stdout/stderr overrides, so
+    # the player lands directly in the shell in this terminal.
+    return subprocess.call(
+        [str(CONNECT_SCRIPT), str(level), DEFAULT_HOST, HOST_PORT]
+    )
 
 
-def main() -> int:
-    wait_for_keypress()
+def main(level: int = DEFAULT_LEVEL) -> int:
+    wait_for_keypress(level)
 
-    rc = build_image()
+    rc = build_image(level)
     if rc != 0:
         return rc
 
-    rc = start_container()
+    rc = start_container(level)
     if rc != 0:
         return rc
 
-    return launch_ssh_in_place()
+    return launch_ssh_in_place(level)
 
 
 if __name__ == "__main__":

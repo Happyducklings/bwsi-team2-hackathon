@@ -1,7 +1,9 @@
+import importlib.util
 import os
 import random
 import sys
 from collections import defaultdict
+from pathlib import Path
 
 WALL = "#"
 FLOOR = "."
@@ -517,12 +519,12 @@ LEVELS = [
 # Add or edit trivia questions here. The answer is the number of the correct choice.
 TRIVIA_QUESTIONS = [
     {
-        "question": "What does the "S" in HTTPS stand for?",
+        "question": "What does the 'S' in HTTPS stand for?",
         "choices": ["Secure", "Server", "Simple", "Standard"],
         "answer": 1,
     },
     {
-        "question": "If a security measure or control fails, the system is not rendered to an insecure state." Which NSA design principle does this statement describe?",
+        "question": "If a security measure or control fails, the system is not rendered to an insecure state! Which NSA design principle does this statement describe?",
         "choices": ["Least Privilege", "Separation of Duties", "Fail-Safe Default", "Defense in Depth"],
         "answer": 3,
     },
@@ -568,6 +570,141 @@ TRIVIA_QUESTIONS = [
     },
 ]
 
+
+
+# Per-level passwords the player must enter after leaving the SSH challenge
+# container. The values match what's stashed in the per-level Dockerfile
+# layouts; level 1's is the shared `maze2024` baked into the Dockerfile
+# today, and levels 2-5 are placeholders until the team designs those
+# challenges.
+LEVEL_PASSWORDS = {
+    1: "maze2024",
+    2: "tbd-level-2",
+    3: "tbd-level-3",
+    4: "tbd-level-4",
+    5: "tbd-level-5",
+}
+
+
+# Absolute path to the refactored launcher module, used to hand the
+# terminal to the per-level Docker container when the player steps on a
+# door. The launcher is imported lazily inside ``run_door_challenge`` so
+# the rest of the game (and ``--test``) doesn't pay any import cost.
+_LAUNCHER_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "bwsi-team2-dockerfile"
+    / "launcher.py"
+)
+
+
+def _load_launcher():
+    """Import the launcher module by file path and return it."""
+    spec = importlib.util.spec_from_file_location(
+        "bwsi_team2_launcher", str(_LAUNCHER_PATH)
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load launcher spec from {_LAUNCHER_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _check_door_password(entered, level_number):
+    """Return True if ``entered`` unlocks the given level's door.
+
+    Pulled out as a tiny pure function so the self-tests can exercise the
+    password gate without touching Docker, SSH, or the launcher module.
+    """
+    expected = LEVEL_PASSWORDS.get(level_number)
+    if expected is None:
+        return False
+    return entered == expected
+
+
+def _read_door_password(level_number):
+    """Prompt for the level password; hide input when a TTY is available.
+
+    Returns the entered string (whitespace-stripped), or raises EOFError
+    if input is closed. ``run_door_challenge`` treats EOFError as
+    'abandoned' and returns to the maze rather than crashing.
+    """
+    prompt = f"Enter the Level {level_number} password to proceed: "
+    try:
+        import getpass
+
+        try:
+            return getpass.getpass(prompt).strip()
+        except (ValueError, getpass.GetPassWarning):
+            # getpass raises ValueError if no TTY is attached. Fall through
+            # to a visible prompt so the game still works in scripts/pipes.
+            print(
+                "[launcher] (No TTY available — password will be visible.)",
+                file=sys.stderr,
+            )
+            return input(prompt).strip()
+    except ImportError:  # pragma: no cover - getpass is always present
+        return input(prompt).strip()
+
+
+def run_door_challenge(level_number, player_state, *, first_attempt=True):
+    """Hand the terminal to the per-level Docker/SSH challenge.
+
+    Builds the image, starts the container, drops the player into the SSH
+    session, then — when the player types ``exit`` — asks for the level
+    password. A wrong answer relaunches the SSH session automatically. A
+    right answer (or a Ctrl-C / EOF) returns control to the maze.
+    """
+    try:
+        launcher = _load_launcher()
+    except (FileNotFoundError, ImportError) as error:
+        print(
+            f"[launcher] Could not load the docker launcher from "
+            f"{_LAUNCHER_PATH}: {error}",
+            file=sys.stderr,
+        )
+        print(
+            "[launcher] Skipping the SSH challenge for this level. "
+            "The password gate is therefore disabled.",
+            file=sys.stderr,
+        )
+        return
+
+    first_time = first_attempt
+    while True:
+        clear_screen()
+        if first_time:
+            launcher.wait_for_keypress(level=level_number)
+        first_time = False
+
+        if launcher.build_image(level=level_number) != 0:
+            return
+        if launcher.start_container(level=level_number) != 0:
+            return
+        if not launcher.wait_for_ssh():
+            print(
+                f"[launcher] SSH port never came up for level {level_number}."
+            )
+            return
+
+        # Blocks until the SSH session exits.
+        launcher.launch_ssh_in_place(level=level_number)
+
+        clear_screen()
+        print("=" * 60)
+        print("  You have left the challenge container.")
+        print(f"  Enter the Level {level_number} password to proceed.")
+        print("=" * 60)
+
+        try:
+            entered = _read_door_password(level_number)
+        except (EOFError, KeyboardInterrupt):
+            print("\n[launcher] Challenge abandoned; returning to the maze.")
+            return
+
+        if _check_door_password(entered, level_number):
+            return
+
+        print("Incorrect password. Reconnecting to the challenge...")
 
 
 def clear_screen():
@@ -1404,6 +1541,10 @@ def play_level(level_number, player_state):
                 break
 
         if level_complete:
+            clear_screen()
+            print(f"You step through the door into Level "
+                  f"{level_number}'s challenge...")
+            run_door_challenge(level_number, player_state, first_attempt=True)
             return "complete"
 
         if not action_messages and not stop_moving:
@@ -1759,6 +1900,23 @@ def run_self_tests():
         assert choice_state.upgrades["lamp_duration"] == 1
         assert sum(choice_state.upgrades.values()) == 2
 
+    def test_door_password_gate():
+        # The gate accepts the password registered in LEVEL_PASSWORDS.
+        assert _check_door_password(LEVEL_PASSWORDS[1], 1) is True
+        # A wrong password keeps the player locked out.
+        assert _check_door_password("not-the-password", 1) is False
+        # An unknown level (e.g. 99) has no registered password, so the
+        # gate must reject anything rather than silently open.
+        assert _check_door_password("anything", 99) is False
+        # Whitespace matters: stripping happens in _read_door_password,
+        # so a padded input that doesn't match exactly is rejected.
+        assert _check_door_password(f" {LEVEL_PASSWORDS[1]} ", 1) is False
+        # The launcher path resolves to a real file on disk so the door
+        # challenge can import it at runtime. The exact filename is
+        # checked so a future rename breaks this test loudly.
+        assert _LAUNCHER_PATH.name == "launcher.py"
+        assert _LAUNCHER_PATH.exists()
+
     tests = [
         ("level validation, items, and enemy types", test_levels_items_and_enemies),
         ("content extension registries", test_content_extension_points),
@@ -1770,6 +1928,7 @@ def run_self_tests():
         ("movement, rest, Speed, and lamp", test_movement_rest_speed_and_lamp),
         ("death reset and retained discovery", test_death_reset_and_discovery),
         ("debug console and upgrade choices", test_debug_console_and_upgrade_choice),
+        ("door password gate", test_door_password_gate),
     ]
 
     print("HIDDEN WALL MAZE - SELF TEST")
