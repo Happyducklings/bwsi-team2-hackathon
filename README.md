@@ -1,2 +1,2 @@
 # bwsi-team2-hackathon
-:D
+Dont hack us, we byte back is such a bar :D
