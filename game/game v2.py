@@ -621,6 +621,11 @@ def _check_door_password(entered, level_number):
     return entered == expected
 
 
+def _challenge_allows_level_completion(result):
+    """Fail closed: only the door challenge's literal True unlocks a level."""
+    return result is True
+
+
 def _read_door_password(level_number):
     """Prompt for the level password; hide input when a TTY is available.
 
@@ -651,8 +656,9 @@ def run_door_challenge(level_number, player_state, *, first_attempt=True):
 
     Builds the image, starts the container, drops the player into the SSH
     session, then — when the player types ``exit`` — asks for the level
-    password. A wrong answer relaunches the SSH session automatically. A
-    right answer (or a Ctrl-C / EOF) returns control to the maze.
+    password. Return True only after the correct password is entered. A wrong
+    answer relaunches SSH; cancellation or infrastructure failure returns
+    False and must never count as level completion.
     """
     try:
         launcher = _load_launcher()
@@ -663,11 +669,11 @@ def run_door_challenge(level_number, player_state, *, first_attempt=True):
             file=sys.stderr,
         )
         print(
-            "[launcher] Skipping the SSH challenge for this level. "
-            "The password gate is therefore disabled.",
+            "[launcher] The challenge cannot start, so this level remains "
+            "locked.",
             file=sys.stderr,
         )
-        return
+        return False
 
     first_time = first_attempt
     while True:
@@ -677,17 +683,36 @@ def run_door_challenge(level_number, player_state, *, first_attempt=True):
         first_time = False
 
         if launcher.build_image(level=level_number) != 0:
-            return
+            return False
         if launcher.start_container(level=level_number) != 0:
-            return
+            return False
         if not launcher.wait_for_ssh():
             print(
                 f"[launcher] SSH port never came up for level {level_number}."
             )
-            return
+            return False
 
         # Blocks until the SSH session exits.
-        launcher.launch_ssh_in_place(level=level_number)
+        try:
+            ssh_rc = launcher.launch_ssh_in_place(level=level_number)
+        except KeyboardInterrupt:
+            print(
+                "\n[launcher] SSH challenge canceled; the level remains locked."
+            )
+            return False
+        # Any nonnegative result means the SSH client returned control normally,
+        # so always continue to the password screen. An interactive `exit`
+        # can inherit the previous remote command's nonzero status, and some
+        # disconnect paths make OpenSSH return 255 even after a usable session.
+        # Neither may bypass the password prompt. Negative subprocess results
+        # mean the SSH process itself was terminated by a signal.
+        if ssh_rc < 0:
+            print(
+                f"[launcher] SSH challenge was interrupted (exit code "
+                f"{ssh_rc}). The level remains locked.",
+                file=sys.stderr,
+            )
+            return False
 
         clear_screen()
         print("=" * 60)
@@ -698,11 +723,13 @@ def run_door_challenge(level_number, player_state, *, first_attempt=True):
         try:
             entered = _read_door_password(level_number)
         except (EOFError, KeyboardInterrupt):
-            print("\n[launcher] Challenge abandoned; returning to the maze.")
-            return
+            print(
+                "\n[launcher] Challenge canceled; the level remains locked."
+            )
+            return False
 
         if _check_door_password(entered, level_number):
-            return
+            return True
 
         print("Incorrect password. Reconnecting to the challenge...")
 
@@ -1544,8 +1571,20 @@ def play_level(level_number, player_state):
             clear_screen()
             print(f"You step through the door into Level "
                   f"{level_number}'s challenge...")
-            run_door_challenge(level_number, player_state, first_attempt=True)
-            return "complete"
+            challenge_complete = run_door_challenge(
+                level_number,
+                player_state,
+                first_attempt=True,
+            )
+            # Fail closed: even an accidental future truthy return value must
+            # not unlock the next level. Only the literal success result does.
+            if _challenge_allows_level_completion(challenge_complete):
+                return "complete"
+            message = (
+                "The challenge was not completed. The door remains locked; "
+                "step away and return when you are ready to try again."
+            )
+            continue
 
         if not action_messages and not stop_moving:
             action_messages.append("You moved.")

@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -37,13 +38,18 @@ IMAGE_NAME = os.environ.get("MAZE_IMAGE", "maze-wargame")
 
 # Base host port that gets mapped to container port 22. Each level uses
 # BASE_HOST_PORT + (level - 1) so multiple levels can coexist without a
-# port collision. Override with the CONNECT_PORT env var to pin every
-# level to a single port (useful for scripted tests).
+# port collision. CONNECT_PORT changes the base port.
 BASE_HOST_PORT = int(os.environ.get("CONNECT_PORT", "2222"))
 DEFAULT_HOST = os.environ.get("CONNECT_HOST", "localhost")
 
 # Set MAZE_FORCE_REBUILD=1 to always rebuild, even if the image exists.
 FORCE_REBUILD = os.environ.get("MAZE_FORCE_REBUILD", "0") == "1"
+SSH_ATTEMPTS = max(1, int(os.environ.get("MAZE_SSH_ATTEMPTS", "3")))
+
+# Avoid rebuilding once per level or password retry in the same game process.
+# We still build once per process so Docker can refresh a stale named image.
+_IMAGE_READY = False
+_ACTIVE_LEVEL = DEFAULT_LEVEL
 
 
 def container_name_for(level: int) -> str:
@@ -52,6 +58,16 @@ def container_name_for(level: int) -> str:
     if override:
         return override
     return f"maze-level{level}"
+
+
+def port_for(level: int) -> int:
+    """Return the host SSH port assigned to a level."""
+    if level < 1:
+        raise ValueError(f"Level must be positive, got {level}.")
+    port = BASE_HOST_PORT + level - 1
+    if port > 65535:
+        raise ValueError(f"SSH port for level {level} is out of range: {port}.")
+    return port
 
 
 def wait_for_keypress(level: int = DEFAULT_LEVEL) -> None:
@@ -77,42 +93,46 @@ def wait_for_keypress(level: int = DEFAULT_LEVEL) -> None:
 def run(cmd: list[str], **kwargs) -> int:
     """Run a command, echoing it first, and stream output."""
     print(f"[launcher] $ {' '.join(cmd)}")
-    return subprocess.call(cmd, **kwargs)
-
-
-def image_exists() -> bool:
-    """Return True if the Docker image is already built locally."""
-    result = subprocess.run(
-        ["docker", "image", "inspect", IMAGE_NAME],
-        capture_output=True,
-    )
-    return result.returncode == 0
+    try:
+        return subprocess.call(cmd, **kwargs)
+    except FileNotFoundError:
+        print(f"[launcher] Command not found: {cmd[0]}", file=sys.stderr)
+        return 127
+    except OSError as error:
+        print(f"[launcher] Could not run {cmd[0]}: {error}", file=sys.stderr)
+        return 1
 
 
 def build_image(level: int = DEFAULT_LEVEL) -> int:
-    """Build the Docker image, unless it already exists and rebuild isn't forced.
+    """Build or refresh the Docker image once per game process.
 
-    The level argument is accepted for symmetry with the other entry points;
-    the image is the same for all levels today, so the level only affects
-    logging.
+    Docker's layer cache makes an unchanged build quick while still ensuring
+    Dockerfile edits are not hidden by an old image with the same name.
     """
-    if not FORCE_REBUILD and image_exists():
-        print(f"[launcher] Image '{IMAGE_NAME}' already exists — skipping build.")
-        print("[launcher] (set MAZE_FORCE_REBUILD=1 to force a rebuild.)")
+    global _IMAGE_READY
+
+    if _IMAGE_READY and not FORCE_REBUILD:
+        print(f"[launcher] Image '{IMAGE_NAME}' is ready — skipping rebuild.")
         return 0
 
     if FORCE_REBUILD:
-        print(f"[launcher] MAZE_FORCE_REBUILD=1 — rebuilding '{IMAGE_NAME}'.")
+        print(f"[launcher] MAZE_FORCE_REBUILD=1 — rebuilding '{IMAGE_NAME}' "
+              "without the Docker cache.")
     else:
-        print(f"[launcher] Image '{IMAGE_NAME}' missing — building it now.")
+        print(f"[launcher] Building or refreshing image '{IMAGE_NAME}'.")
 
     if not DOCKERFILE.exists():
         print(f"[launcher] Dockerfile not found at {DOCKERFILE}", file=sys.stderr)
         return 1
 
-    return run(
-        ["docker", "build", "-t", IMAGE_NAME, "-f", str(DOCKERFILE), str(HERE)]
-    )
+    command = ["docker", "build"]
+    if FORCE_REBUILD:
+        command.append("--no-cache")
+    command.extend(["-t", IMAGE_NAME, "-f", str(DOCKERFILE), str(HERE)])
+    rc = run(command)
+    if rc == 0:
+        _IMAGE_READY = True
+    return rc
 
 
 def start_container(level: int = DEFAULT_LEVEL) -> int:
@@ -121,36 +141,59 @@ def start_container(level: int = DEFAULT_LEVEL) -> int:
     ``docker run --rm`` would be simpler, but we want a stable name so the SSH
     script (and the player) can reach it predictably across doors.
     """
+    global _ACTIVE_LEVEL
+
     container_name = container_name_for(level)
+    host_port = port_for(level)
     # If a previous container with this name exists, remove it so we can
     # re-publish the port cleanly.
-    subprocess.run(
-        ["docker", "rm", "-f", container_name],
-        capture_output=True,
-    )
+    try:
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            capture_output=True,
+        )
+    except FileNotFoundError:
+        print("[launcher] Command not found: docker", file=sys.stderr)
+        return 127
+    except OSError as error:
+        print(f"[launcher] Could not run docker: {error}", file=sys.stderr)
+        return 1
 
-    return run(
+    rc = run(
         [
             "docker", "run", "-d",
             "--name", container_name,
-            "-p", f"{HOST_PORT}:22",
+            "-p", f"127.0.0.1:{host_port}:22",
             IMAGE_NAME,
         ]
     )
+    if rc == 0:
+        _ACTIVE_LEVEL = level
+    return rc
 
 
-def wait_for_ssh(timeout_seconds: int = 30) -> bool:
-    """Block until the container's SSH port is accepting connections."""
+def wait_for_ssh(
+    level: int | None = None,
+    timeout_seconds: float = 30,
+) -> bool:
+    """Block until the requested (or most recently started) SSH port is ready."""
     import socket
-    import time
 
+    if level is None:
+        level = _ACTIVE_LEVEL
+    host_port = port_for(level)
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(1.0)
             try:
-                sock.connect((DEFAULT_HOST, int(HOST_PORT)))
-                return True
+                sock.connect((DEFAULT_HOST, host_port))
+                # A successful TCP connect alone can race with sshd startup.
+                # Wait for an actual SSH identification banner before handing
+                # the terminal to the client.
+                if sock.recv(64).startswith(b"SSH-"):
+                    return True
+                time.sleep(0.5)
             except OSError:
                 time.sleep(0.5)
     return False
@@ -169,59 +212,75 @@ def launch_ssh_in_place(level: int = DEFAULT_LEVEL) -> int:
         print(f"[launcher] connect.sh not found at {CONNECT_SCRIPT}", file=sys.stderr)
         return 1
 
-    if not wait_for_ssh():
+    host_port = port_for(level)
+    if not wait_for_ssh(level):
         container_name = container_name_for(level)
-        print(f"[launcher] SSH port {HOST_PORT} never came up. Check 'docker logs "
+        print(f"[launcher] SSH port {host_port} never came up. Check 'docker logs "
               f"{container_name}'.", file=sys.stderr)
         return 1
 
-    print(f"[launcher] Connecting to {DEFAULT_HOST}:{HOST_PORT} as level{level} "
+    print(f"[launcher] Connecting to {DEFAULT_HOST}:{host_port} as level{level} "
           "in this terminal...")
     print("[launcher] (type 'exit' to leave the challenge and return to the maze.)")
     print()
+    sys.stdout.flush()
 
-    # subprocess.call blocks until the SSH session exits. SSH inherits the
-    # controlling TTY because we pass no stdin/stdout/stderr overrides, so
-    # the player lands directly in the shell in this terminal.
+    # Keep SSH in the launcher's existing session and foreground process
+    # group. Creating a new session here can make SSH receive SIGTTIN as soon
+    # as it reads the terminal, which looks like a session that flashes open
+    # and immediately closes.
     #
-    # ``start_new_session=True`` puts the child in a new session and process
-    # group. Without it, the child shares the parent's controlling TTY but
-    # is NOT the foreground process group, so reading from the terminal
-    # delivers SIGTTIN and SSH drops the connection immediately. This is
-    # what made the remote session "open then instantly close" on the
-    # first door reach.
-    #
-    # SSH (and the remote shell it spawns) calls ``tcsetpgrp`` to make
-    # itself the foreground process group of the TTY while the player is
-    # inside the challenge. When the SSH session exits, that foreground
-    # process group belongs to the now-dead child session. If we don't
-    # restore the foreground process group back to the launcher before
-    # returning, the orchestrator's subsequent ``input()`` /
-    # ``getpass.getpass()`` reads are delivered to a TTY whose foreground
-    # process group is dead, so the read either returns ``EIO`` or blocks
-    # forever. On the first door reach the launcher was the only reader
-    # so the symptom was masked; on the second door reach the maze loop
-    # needs to read input again and the broken TTY state manifests as
-    # "the password prompt never appears."
-    parent_pgid = os.getpgrp()
+    # Save the terminal attributes as an extra safeguard. SSH normally
+    # restores them, but an early disconnect or signal can otherwise leave
+    # input echo/canonical mode altered and hide the next password prompt.
+    terminal_fd = None
+    terminal_state = None
     try:
-        return subprocess.call(
-            [str(CONNECT_SCRIPT), str(level), DEFAULT_HOST, HOST_PORT],
-            start_new_session=True,
-        )
+        if sys.stdin.isatty():
+            import termios
+
+            terminal_fd = sys.stdin.fileno()
+            terminal_state = termios.tcgetattr(terminal_fd)
+    except (AttributeError, ImportError, OSError, ValueError):
+        terminal_fd = None
+        terminal_state = None
+
+    command = [
+        str(CONNECT_SCRIPT),
+        str(level),
+        DEFAULT_HOST,
+        str(host_port),
+    ]
+    try:
+        for attempt in range(1, SSH_ATTEMPTS + 1):
+            rc = run(command)
+            # OpenSSH uses 255 for connection/authentication failures.
+            # Retry those briefly; a normal `exit` returns 0 and must return
+            # control to the game's password screen immediately.
+            if rc != 255 or attempt == SSH_ATTEMPTS:
+                return rc
+            print(
+                f"[launcher] SSH ended before the session was established "
+                f"(attempt {attempt}/{SSH_ATTEMPTS}); retrying...",
+                file=sys.stderr,
+            )
+            time.sleep(0.5)
+            wait_for_ssh(level, timeout_seconds=5)
     finally:
-        # Reclaim the controlling TTY so the caller can read from it again.
-        # This is a no-op when stdin isn't a TTY (e.g. piped input).
-        try:
-            fd = sys.stdin.fileno()
-        except (AttributeError, ValueError, OSError):
-            fd = -1
-        if fd >= 0:
+        if terminal_fd is not None and terminal_state is not None:
             try:
-                os.tcsetpgrp(fd, parent_pgid)
-            except (OSError, PermissionError):
-                # Not a TTY, or we don't own it — nothing to restore.
+                import termios
+
+                termios.tcsetattr(
+                    terminal_fd,
+                    termios.TCSADRAIN,
+                    terminal_state,
+                )
+            except (ImportError, OSError):
                 pass
+        # Keep the next prompt from being stuck behind buffered launcher text.
+        sys.stdout.flush()
+        sys.stderr.flush()
 
 
 def main(level: int = DEFAULT_LEVEL) -> int:
