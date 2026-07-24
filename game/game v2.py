@@ -111,54 +111,54 @@ LEVELS = [
 # Add or edit trivia questions here. The answer is the number of the correct choice.
 TRIVIA_QUESTIONS = [
     {
-        "question": "What planet is known as the Red Planet?",
-        "choices": ["Earth", "Mars", "Jupiter", "Venus"],
-        "answer": 2,
-    },
-    {
-        "question": "What is 8 multiplied by 7?",
-        "choices": ["54", "56", "64", "48"],
-        "answer": 2,
-    },
-    {
-        "question": "Which ocean is the largest?",
-        "choices": ["Atlantic", "Indian", "Arctic", "Pacific"],
-        "answer": 4,
-    },
-    {
-        "question": "What gas do plants absorb from the air?",
-        "choices": ["Oxygen", "Hydrogen", "Carbon dioxide", "Helium"],
-        "answer": 3,
-    },
-    {
-        "question": "How many sides does a hexagon have?",
-        "choices": ["5", "6", "7", "8"],
-        "answer": 2,
-    },
-    {
-        "question": "What is the capital of France?",
-        "choices": ["Rome", "Madrid", "Paris", "Berlin"],
-        "answer": 3,
-    },
-    {
-        "question": "Which animal is the fastest on land?",
-        "choices": ["Lion", "Cheetah", "Horse", "Tiger"],
-        "answer": 2,
-    },
-    {
-        "question": "What is the freezing point of water in Celsius?",
-        "choices": ["0", "10", "32", "100"],
+        "question": "What does the "S" in HTTPS stand for?",
+        "choices": ["Secure", "Server", "Simple", "Standard"],
         "answer": 1,
     },
     {
-        "question": "Which language is mainly used to style web pages?",
-        "choices": ["HTML", "CSS", "Python", "SQL"],
+        "question": "If a security measure or control fails, the system is not rendered to an insecure state." Which NSA design principle does this statement describe?",
+        "choices": ["Least Privilege", "Separation of Duties", "Fail-Safe Default", "Defense in Depth"],
+        "answer": 3,
+    },
+    {
+        "question": "What’s the name of the first major cyber attack?",
+        "choices": ["Wannacry", "The Creeper Worm", "The Morris Worm", "ILOVEYOU"],
+        "answer": 3,
+    },
+    {
+        "question": "Which of the following would be the best technology for a device to wirelessly connect to a speaker?",
+        "choices": ["Wi-Fi", "NFC", "5G", "Bluetooth"],
+        "answer": 4,
+    },
+    {
+        "question": "Your boss would like you to test a new software update in a controlled environment before releasing it to the whole organization. Which Best Practice should be utilized to minimize the risk to the production system?",
+        "choices": ["Virtual machine", "Cloud computing", "Sandbox", "RDP"],
+        "answer": 3,
+    },
+    {
+        "question": "What type of malicious software is designed to look like a helpful or safe program, but actually performs harmful actions once installed?",
+        "choices": ["Worm", "Trojan Horse", "Ransomware", "Spyware"],
         "answer": 2,
     },
     {
-        "question": "How many continents are there?",
-        "choices": ["5", "6", "7", "8"],
-        "answer": 3,
+        "question": "What do the initials 'DDoS' stand for in relation to cyber attacks?",
+        "choices": ["Domain Detection of Suspicious Behavior", "Distributed Denial of Service", "Data Destruction on Site", "Direct Denial of Service"],
+        "answer": 2,
+    },
+    {
+        "question": "In a company, what should you do first if you suspect a phishing attack?",
+        "choices": ["Check reddit", "Click the link", "Screenshot and share with friends", "Report to IT or security"],
+        "answer": 4,
+    },
+    {
+        "question": "Which type of cyber attack aims to deceive users into providing sensitive information?",
+        "choices": ["DDoS", "Phishing", "Ransomware", "Malware"],
+        "answer": 2,
+    },
+    {
+        "question": "What’s a common trick in a spoof page?",
+        "choices": ["Extra Buttons", "Bold text", "Bright colors", "Misspelled domain"],
+        "answer": 4,
     },
 ]
 
