@@ -1,7 +1,7 @@
 import os
 import random
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque
 
 WALL = "#"
 FLOOR = "."
@@ -54,9 +54,9 @@ class PowerUp(Item):
 
     def collect(self, player_state):
         player_state.powerups.add(self.effect)
-        if self.effect == "flashlight":
-            player_state.upgrades["flashlight"] = max(
-                1, player_state.upgrades["flashlight"]
+        if self.effect in {"flashlight", "sword"}:
+            player_state.upgrades[self.effect] = max(
+                1, player_state.upgrades[self.effect]
             )
 
 
@@ -65,12 +65,17 @@ class Consumable(Item):
 
     item_type = "consumable"
 
-    def __init__(self, name, description, amount=1):
+    def __init__(self, name, description, amount=1, item_key=None):
         super().__init__(name, description)
         self.amount = amount
+        self.item_key = item_key or name.lower().replace(" ", "_")
 
     def collect(self, player_state):
-        player_state.consumables[self.name] += self.amount
+        player_state.add_consumable(self)
+
+    def use(self, context):
+        """Return (used, message). Subclasses define their own effect."""
+        return False, f"{self.name} does not have a use behavior yet."
 
     def pickup_message(self):
         return (
@@ -79,12 +84,72 @@ class Consumable(Item):
         )
 
 
+class Bomb(Consumable):
+    def __init__(self, amount=1):
+        super().__init__(
+            "Bomb",
+            "Destroys one adjacent wall in a chosen direction.",
+            amount,
+            item_key="bomb",
+        )
+
+    def use(self, context):
+        while True:
+            command = input("Bomb direction (W, A, S, D, or Q): ").strip().lower()
+            if command == "q":
+                return False, "Bomb use cancelled."
+            if command in DIRECTIONS:
+                break
+            print("Enter W, A, S, D, or Q.")
+
+        dx, dy = DIRECTIONS[command]
+        px, py = context["player"]
+        target = (px + dx, py + dy)
+        maze = context["maze"]
+        x, y = target
+        if not (0 <= y < len(maze) and 0 <= x < len(maze[0])):
+            return False, "The bomb cannot target outside the map."
+        if maze[y][x] != WALL:
+            return False, "There is no wall in that direction. The bomb was saved."
+
+        maze[y][x] = FLOOR
+        context["discovered_walls"].discard(target)
+        return True, f"Bomb destroyed the wall at {target}."
+
+
+class Cookie(Consumable):
+    def __init__(self, amount=1):
+        super().__init__(
+            "Cookie",
+            "Restores 5 HP.",
+            amount,
+            item_key="cookie",
+        )
+
+    def use(self, context):
+        player_state = context["player_state"]
+        if player_state.hp >= player_state.max_hp:
+            return False, "You already have full HP. The cookie was saved."
+
+        restored = min(5, player_state.max_hp - player_state.hp)
+        player_state.hp += restored
+        return True, f"Cookie restored {restored} HP."
+
+
+# Random item spawning and the inventory menu use this registry automatically.
+CONSUMABLE_TYPES = {
+    "bomb": Bomb,
+    "cookie": Cookie,
+}
+
+
 STAMINA_BONUSES = (5, 10, 10, 15)
 SWORD_DAMAGE_BONUSES = (3, 5, 8, 11)
 HP_BONUSES = (5, 5, 5, 5)
 LAMP_DURABILITY_BY_LEVEL = (3, 5, 7, 10, 14)
 SWORD_STAMINA_COST = 5
 MOVEMENT_STAMINA_COST = 1
+TRIVIA_DAMAGE = 3
 
 
 class PlayerState:
@@ -95,11 +160,12 @@ class PlayerState:
         self.upgrades = defaultdict(int)
         self.powerups = set()
         self.consumables = defaultdict(int)
+        self.consumable_items = {}
+        self.item_recency = []
         self.hp = self.max_hp
         self.armor_durability = 0
         self.stamina = self.max_stamina
         self.lamp_uses = self.lamp_capacity
-        self.speed_uses = self.speed_uses_per_level
 
     @property
     def max_hp(self):
@@ -109,7 +175,7 @@ class PlayerState:
     @property
     def max_stamina(self):
         level = self.upgrades["stamina"]
-        return 20 + sum(STAMINA_BONUSES[:level])
+        return 30 + sum(STAMINA_BONUSES[:level])
 
     @property
     def damage(self):
@@ -123,26 +189,45 @@ class PlayerState:
         return LAMP_DURABILITY_BY_LEVEL[self.upgrades["lamp_duration"]]
 
     @property
-    def speed_uses_per_level(self):
-        level = self.upgrades["speed"]
-        return 0 if level == 0 else level + 1
-
-    @property
     def speed_max_steps(self):
         level = self.upgrades["speed"]
         if level == 0:
             return 1
         return 3 if level >= 3 else 2
 
+    @property
+    def speed_stamina_discount(self):
+        return (0, 0, 1, 1, 2)[self.upgrades["speed"]]
+
+    def movement_stamina_cost(self, step_count):
+        return max(
+            1,
+            step_count * MOVEMENT_STAMINA_COST - self.speed_stamina_discount,
+        )
+
     def start_level(self):
         self.hp = self.max_hp
         self.stamina = self.max_stamina
         self.lamp_uses = self.lamp_capacity
-        self.speed_uses = self.speed_uses_per_level
 
     def respawn(self):
         self.hp = self.max_hp
         self.stamina = self.max_stamina
+
+    def add_consumable(self, item):
+        self.consumables[item.item_key] += item.amount
+        self.consumable_items[item.item_key] = item
+        if item.item_key in self.item_recency:
+            self.item_recency.remove(item.item_key)
+        self.item_recency.insert(0, item.item_key)
+
+    def consume_item(self, item_key):
+        self.consumables[item_key] -= 1
+        if self.consumables[item_key] <= 0:
+            del self.consumables[item_key]
+            self.consumable_items.pop(item_key, None)
+            if item_key in self.item_recency:
+                self.item_recency.remove(item_key)
 
     def take_damage(self, amount):
         """Apply one hit. Return (died, description)."""
@@ -172,16 +257,14 @@ class Enemy:
         self,
         name,
         max_hp,
-        contact_damage=3,
-        wrong_answer_damage=1,
+        attack_damage=3,
         armor=0,
-        attack_range=0,
+        attack_range=1,
     ):
         self.name = name
         self.max_hp = max_hp
         self.hp = max_hp
-        self.contact_damage = contact_damage
-        self.wrong_answer_damage = wrong_answer_damage
+        self.attack_damage = attack_damage
         self.armor = armor
         self.attack_range = attack_range
 
@@ -213,43 +296,38 @@ class LevelDefinition:
 ENEMY_ARCHETYPES = {
     "trivia_guard": {
         "name": "Trivia Guard",
-        "max_hp": 5,
-        "contact_damage": 3,
-        "wrong_answer_damage": 1,
+        "max_hp": 8,
+        "attack_damage": 3,
         "armor": 0,
-        "attack_range": 0,
+        "attack_range": 1,
     },
     "brute": {
         "name": "Brute",
-        "max_hp": 9,
-        "contact_damage": 4,
-        "wrong_answer_damage": 1,
+        "max_hp": 14,
+        "attack_damage": 4,
         "armor": 0,
-        "attack_range": 0,
+        "attack_range": 1,
     },
     "quizmaster": {
         "name": "Quizmaster",
-        "max_hp": 7,
-        "contact_damage": 3,
-        "wrong_answer_damage": 2,
+        "max_hp": 12,
+        "attack_damage": 3,
         "armor": 0,
-        "attack_range": 1,
+        "attack_range": 2,
     },
     "sentinel": {
         "name": "Sentinel",
-        "max_hp": 12,
-        "contact_damage": 5,
-        "wrong_answer_damage": 1,
+        "max_hp": 18,
+        "attack_damage": 5,
         "armor": 2,
-        "attack_range": 1,
+        "attack_range": 2,
     },
     "warden": {
         "name": "Warden",
-        "max_hp": 16,
-        "contact_damage": 5,
-        "wrong_answer_damage": 2,
+        "max_hp": 25,
+        "attack_damage": 5,
         "armor": 3,
-        "attack_range": 1,
+        "attack_range": 3,
     },
 }
 
@@ -325,6 +403,13 @@ def apply_hp_upgrade(player_state, level):
 # Adding an upgrade now requires one entry here. Its description, prerequisite,
 # maximum level, and apply behavior stay together.
 UPGRADE_SPECS = {
+    "lamp": UpgradeDefinition(
+        "Lamp",
+        1,
+        lambda level, state: (
+            "Unlock the lamp with 3 illuminated movement uses per level."
+        ),
+    ),
     "lamp_duration": UpgradeDefinition(
         "Lamp Durability",
         4,
@@ -332,6 +417,7 @@ UPGRADE_SPECS = {
             f"Increase lamp durability to "
             f"{LAMP_DURABILITY_BY_LEVEL[level]} uses per level."
         ),
+        is_available=lambda state: state.upgrades["lamp"] > 0,
     ),
     "lamp_diagonal": UpgradeDefinition(
         "Wide Lamp",
@@ -339,6 +425,7 @@ UPGRADE_SPECS = {
         lambda level, state: (
             "The lamp also reveals all four adjacent diagonal tiles."
         ),
+        is_available=lambda state: state.upgrades["lamp"] > 0,
     ),
     "flashlight": UpgradeDefinition(
         "Flashlight Beam",
@@ -369,13 +456,14 @@ UPGRADE_SPECS = {
         4,
         lambda level, state: (
             f"Use up to {3 if level >= 3 else 2} movement inputs at once, "
-            f"{level + 1} times per level."
+            f"with a {((0, 0, 1, 1, 2)[level])}-stamina discount per command."
         ),
     ),
     "sword": UpgradeDefinition(
         "Sword Area",
         4,
         describe_sword,
+        is_available=lambda state: "sword" in state.powerups,
     ),
     "stamina": UpgradeDefinition(
         "Stamina",
@@ -433,7 +521,7 @@ LEVEL_MAPS = [
         list("#.#....##..#"),
         list("#.#.!..#.#.#"),
         list("#...##.....#"),
-        list("#.!.#...#K.#"),
+        list("#*!.#...#K.#"),
         list("#@......!..#"),
         list("############"),
     ],
@@ -508,7 +596,17 @@ LEVELS = [
             ),
         },
     ),
-    LevelDefinition("Level 2", LEVEL_MAPS[1]),
+    LevelDefinition(
+        "Level 2",
+        LEVEL_MAPS[1],
+        items={
+            (1, 9): PowerUp(
+                "Sword",
+                "Unlocks trivia-gated sword attacks.",
+                "sword",
+            ),
+        },
+    ),
     LevelDefinition("Level 3", LEVEL_MAPS[2]),
     LevelDefinition("Level 4", LEVEL_MAPS[3]),
     LevelDefinition("Level 5", LEVEL_MAPS[4]),
@@ -572,6 +670,32 @@ TRIVIA_QUESTIONS = [
 
 def clear_screen():
     os.system("cls" if os.name == "nt" else "clear")
+
+
+def spawn_random_consumables(
+    maze,
+    items,
+    excluded_positions=None,
+    minimum=1,
+    maximum=2,
+):
+    """Place registry-backed consumables on currently empty floor tiles."""
+    excluded_positions = excluded_positions or set()
+    empty_positions = [
+        (x, y)
+        for y, row in enumerate(maze)
+        for x, tile in enumerate(row)
+        if tile == FLOOR and (x, y) not in excluded_positions
+    ]
+    if not empty_positions or not CONSUMABLE_TYPES:
+        return
+
+    count = min(random.randint(minimum, maximum), len(empty_positions))
+    for position in random.sample(empty_positions, count):
+        item_class = random.choice(tuple(CONSUMABLE_TYPES.values()))
+        item = item_class()
+        items[position] = item
+        maze[position[1]][position[0]] = ITEM_TILE
 
 
 def build_level(level_number):
@@ -651,6 +775,7 @@ def build_level(level_number):
 
     # The player is tracked separately while the game runs.
     maze[player[1]][player[0]] = FLOOR
+    spawn_random_consumables(maze, items, excluded_positions={player})
 
     return maze, player, player, (0, -1), door, key, items, enemies
 
@@ -724,22 +849,26 @@ def draw(
         f"{LEVELS[level_number - 1].name} "
         f"({level_number} of {len(LEVELS)})    Map size: {width} x {height}"
     )
-    print(
-        "W A S D to move (1 stamina)    R rest (+5)    "
-        "L lamp    M memory    Q quit"
-    )
+    controls = "W A S D move    R rest    I items    M memory    Q quit"
+    if player_state.upgrades["lamp"]:
+        controls += "    L lamp"
+    print(controls)
     print(f"Facing: {FACING_NAMES[facing]}")
     print(
         f"HP: {player_state.hp}/{player_state.max_hp}    "
         f"Stamina: {player_state.stamina}/{player_state.max_stamina}    "
         f"Damage: {player_state.damage}"
     )
-    print(
+    status = (
         f"Key: {'collected' if has_key else 'not collected'}    "
-        f"Lamp: {'on' if lamp_on else 'off'} "
-        f"({player_state.lamp_uses}/{player_state.lamp_capacity} uses)    "
         f"Memory: {'on' if memory_mode else 'off'}"
     )
+    if player_state.upgrades["lamp"]:
+        status += (
+            f"    Lamp: {'on' if lamp_on else 'off'} "
+            f"({player_state.lamp_uses}/{player_state.lamp_capacity} uses)"
+        )
+    print(status)
 
     unlocked_tools = []
     if "flashlight" in player_state.powerups:
@@ -752,8 +881,9 @@ def draw(
         )
     if player_state.upgrades["speed"]:
         unlocked_tools.append(
-            f"Speed {player_state.speed_uses} uses "
-            f"(up to {player_state.speed_max_steps} moves)"
+            f"Speed Lv{player_state.upgrades['speed']} "
+            f"(up to {player_state.speed_max_steps} moves, "
+            f"-{player_state.speed_stamina_discount} stamina)"
         )
     if player_state.upgrades["sword"]:
         unlocked_tools.append(
@@ -844,7 +974,7 @@ def draw(
 
 
 def ask_trivia_question(enemy, player_state):
-    """Fight an enemy with trivia. Return defeated, survived, or dead."""
+    """Make a contact-trivia attack. Return correct or missed."""
     question = random.choice(TRIVIA_QUESTIONS)
 
     print(
@@ -863,23 +993,50 @@ def ask_trivia_question(enemy, player_state):
             print("Please enter 1, 2, 3, or 4.")
 
         if int(answer) == question["answer"]:
-            print(f"Correct! The {enemy.name} is defeated.")
+            print(
+                f"Correct! You deal {TRIVIA_DAMAGE} trivia damage "
+                f"to the {enemy.name}."
+            )
             input("Press Enter to continue...")
-            return "defeated"
+            return "correct"
 
-        died, damage_message = player_state.take_damage(
-            enemy.wrong_answer_damage
-        )
-        print(f"Incorrect! {damage_message}")
-        if died:
-            input("Press Enter to respawn...")
-            return "dead"
+        print("Incorrect! Your contact attack missed.")
 
     correct_choice = question["choices"][question["answer"] - 1]
     print(f"The correct answer was: {correct_choice}")
-    print(f"The {enemy.name} remains in place, but you are not reset.")
+    print(f"The {enemy.name} remains in place.")
     input("Press Enter to continue...")
-    return "survived"
+    return "missed"
+
+
+def resolve_enemy_attack(enemy, player_state):
+    """Gate one enemy attack behind a single defensive trivia answer."""
+    question = random.choice(TRIVIA_QUESTIONS)
+    print(
+        f"\nThe {enemy.name} attacks for {enemy.attack_damage} damage! "
+        "Answer correctly to defend:"
+    )
+    print(question["question"])
+    for number, choice in enumerate(question["choices"], start=1):
+        print(f"{number}. {choice}")
+
+    while True:
+        answer = input("Enter 1 to 4: ").strip()
+        if answer in {"1", "2", "3", "4"}:
+            break
+        print("Please enter 1, 2, 3, or 4.")
+
+    if int(answer) == question["answer"]:
+        return False, f"Correct! You blocked the {enemy.name}'s attack."
+
+    died, damage_message = player_state.take_damage(enemy.attack_damage)
+    return died, f"Incorrect. {damage_message}"
+
+
+def apply_trivia_hit(enemy):
+    """Deal contact-trivia damage and return whether the enemy was defeated."""
+    enemy.hp -= TRIVIA_DAMAGE
+    return enemy.hp <= 0
 
 
 def sword_attack_cells(maze, player, direction, sword_level):
@@ -1014,6 +1171,39 @@ def apply_upgrade(key, player_state):
     )
 
 
+def use_item_menu(player_state, context):
+    """Open the recency-sorted inventory. Return (used_item, message)."""
+    available_keys = [
+        key
+        for key in player_state.item_recency
+        if player_state.consumables.get(key, 0) > 0
+    ]
+    if not available_keys:
+        return False, "You do not have any consumable items."
+
+    print("\nITEMS - most recently collected first")
+    for number, key in enumerate(available_keys, start=1):
+        item = player_state.consumable_items[key]
+        amount = player_state.consumables[key]
+        print(f"{number}. {item.name} x{amount} - {item.description}")
+    print("Q. Close item menu")
+
+    while True:
+        answer = input("Choose an item: ").strip().lower()
+        if answer == "q":
+            return False, "Item menu closed."
+        if answer.isdigit() and 1 <= int(answer) <= len(available_keys):
+            break
+        print(f"Enter 1 to {len(available_keys)}, or Q.")
+
+    item_key = available_keys[int(answer) - 1]
+    item = player_state.consumable_items[item_key]
+    used, message = item.use(context)
+    if used:
+        player_state.consume_item(item_key)
+    return used, message
+
+
 def debug_upgrade_console(player_state):
     """Safely set an upgrade level without bypassing required dependencies."""
     print("\nDEBUG UPGRADE CONSOLE")
@@ -1041,9 +1231,10 @@ def debug_upgrade_console(player_state):
             break
         print(f"Enter a level from 1 to {maximum}.")
 
-    if key == "flashlight":
-        player_state.powerups.add("flashlight")
+    if key in {"flashlight", "sword"}:
+        player_state.powerups.add(key)
     if key == "sword_damage":
+        player_state.powerups.add("sword")
         player_state.upgrades["sword"] = max(
             1, player_state.upgrades["sword"]
         )
@@ -1054,9 +1245,6 @@ def debug_upgrade_console(player_state):
         player_state.stamina = player_state.max_stamina
     elif key == "lamp_duration":
         player_state.lamp_uses = player_state.lamp_capacity
-    elif key == "speed":
-        player_state.speed_uses = player_state.speed_uses_per_level
-
     return (
         f"Debug granted {spec.name} Level {level}."
     )
@@ -1067,27 +1255,139 @@ def reset_enemy_health(enemies):
         enemy.hp = enemy.max_hp
 
 
-def ranged_enemy_attacks(enemies, player, discovered_npcs, player_state):
-    """Resolve attacks from enemies one tile away and reveal their positions."""
+def enemy_can_attack(maze, enemy_position, player, attack_range):
+    """Check cardinal attack range without allowing attacks through walls."""
+    dx = player[0] - enemy_position[0]
+    dy = player[1] - enemy_position[1]
+    distance = abs(dx) + abs(dy)
+    effective_range = max(1, attack_range)
+    if distance > effective_range:
+        return False
+    if distance == 1:
+        return True
+    if dx != 0 and dy != 0:
+        return False
+
+    step_x = 0 if dx == 0 else (1 if dx > 0 else -1)
+    step_y = 0 if dy == 0 else (1 if dy > 0 else -1)
+    x, y = enemy_position
+    for _ in range(1, distance):
+        x += step_x
+        y += step_y
+        if maze[y][x] == WALL:
+            return False
+    return True
+
+
+def enemies_attack_in_range(
+    maze,
+    enemies,
+    player,
+    discovered_npcs,
+    player_state,
+):
+    """Resolve every in-range attack through defensive trivia."""
     messages = []
     for position, enemy in enemies.items():
-        if enemy.attack_range == 0:
-            continue
-
-        distance = abs(position[0] - player[0]) + abs(position[1] - player[1])
-        if distance > enemy.attack_range:
+        if not enemy_can_attack(maze, position, player, enemy.attack_range):
             continue
 
         discovered_npcs.add(position)
-        died, damage_message = player_state.take_damage(enemy.contact_damage)
+        died, attack_message = resolve_enemy_attack(enemy, player_state)
         messages.append(
-            f"The ranged {enemy.name} at {position} revealed itself and attacked. "
-            f"{damage_message}"
+            f"The {enemy.name} at {position} attacked. {attack_message}"
         )
         if died:
             return True, messages
 
     return False, messages
+
+
+def next_enemy_step(maze, start, player, occupied_positions):
+    """Find one shortest-path step toward the player."""
+    height = len(maze)
+    width = len(maze[0])
+    queue = deque([(start, None)])
+    visited = {start}
+
+    while queue:
+        position, first_step = queue.popleft()
+        if position == player:
+            return first_step
+
+        for dx, dy in DIRECTIONS.values():
+            neighbor = (position[0] + dx, position[1] + dy)
+            x, y = neighbor
+            if not (0 <= x < width and 0 <= y < height):
+                continue
+            if neighbor in visited:
+                continue
+            if neighbor in occupied_positions and neighbor != start:
+                continue
+            if neighbor != player and maze[y][x] != FLOOR:
+                continue
+
+            visited.add(neighbor)
+            queue.append((neighbor, neighbor if first_step is None else first_step))
+
+    return None
+
+
+def move_enemies_toward_player(
+    maze,
+    enemies,
+    player,
+    discovered_npcs,
+    player_state,
+):
+    """Move out-of-range enemies once, then give in-range enemies one attack."""
+    messages = []
+    occupied_positions = set(enemies)
+
+    for old_position, enemy in list(enemies.items()):
+        if old_position not in enemies:
+            continue
+        if enemy_can_attack(
+            maze,
+            old_position,
+            player,
+            enemy.attack_range,
+        ):
+            continue
+
+        step = next_enemy_step(
+            maze,
+            old_position,
+            player,
+            occupied_positions,
+        )
+        if step is None:
+            continue
+
+        if step == player:
+            continue
+
+        was_discovered = old_position in discovered_npcs
+        del enemies[old_position]
+        occupied_positions.remove(old_position)
+        maze[old_position[1]][old_position[0]] = FLOOR
+
+        enemies[step] = enemy
+        occupied_positions.add(step)
+        maze[step[1]][step[0]] = NPC
+        discovered_npcs.discard(old_position)
+        if was_discovered:
+            discovered_npcs.add(step)
+
+    died, attack_messages = enemies_attack_in_range(
+        maze,
+        enemies,
+        player,
+        discovered_npcs,
+        player_state,
+    )
+    messages.extend(attack_messages)
+    return died, messages
 
 
 def choose_end_of_level_upgrade(player_state):
@@ -1171,7 +1471,9 @@ def play_level(level_number, player_state):
             return "complete"
 
         if command == "l":
-            if lamp_on:
+            if player_state.upgrades["lamp"] == 0:
+                message = "You have not unlocked the lamp."
+            elif lamp_on:
                 lamp_on = False
                 message = "Lamp turned off."
             elif player_state.lamp_uses == 0:
@@ -1179,6 +1481,35 @@ def play_level(level_number, player_state):
             else:
                 lamp_on = True
                 message = "Lamp turned on."
+            continue
+
+        if command == "i":
+            item_context = {
+                "maze": maze,
+                "player": player,
+                "player_state": player_state,
+                "discovered_walls": discovered_walls,
+            }
+            used_item, message = use_item_menu(player_state, item_context)
+            if used_item:
+                died, enemy_messages = move_enemies_toward_player(
+                    maze,
+                    enemies,
+                    player,
+                    discovered_npcs,
+                    player_state,
+                )
+                if enemy_messages:
+                    message += " " + " ".join(enemy_messages)
+                if died:
+                    player_state.respawn()
+                    reset_enemy_health(enemies)
+                    player = start_position
+                    lamp_on = False
+                    message += (
+                        " You respawned at the start; all living enemies "
+                        "returned to full HP."
+                    )
             continue
 
         if command == "m":
@@ -1200,16 +1531,19 @@ def play_level(level_number, player_state):
             continue
 
         if command == "r":
-            recovered = min(5, player_state.max_stamina - player_state.stamina)
-            player_state.stamina += recovered
-            died, ranged_messages = ranged_enemy_attacks(
+            recovered = player_state.max_stamina - player_state.stamina
+            player_state.stamina = player_state.max_stamina
+            died, enemy_messages = move_enemies_toward_player(
+                maze,
                 enemies,
                 player,
                 discovered_npcs,
                 player_state,
             )
-            messages = [f"You rested and recovered {recovered} stamina."]
-            messages.extend(ranged_messages)
+            messages = [
+                f"You rested to full stamina and recovered {recovered}."
+            ]
+            messages.extend(enemy_messages)
             if died:
                 player_state.respawn()
                 reset_enemy_health(enemies)
@@ -1240,21 +1574,34 @@ def play_level(level_number, player_state):
                     " You respawned at the start; all living enemies "
                     "returned to full HP."
                 )
+            else:
+                died, enemy_messages = move_enemies_toward_player(
+                    maze,
+                    enemies,
+                    player,
+                    discovered_npcs,
+                    player_state,
+                )
+                if enemy_messages:
+                    message += " " + " ".join(enemy_messages)
+                if died:
+                    player_state.respawn()
+                    reset_enemy_health(enemies)
+                    player = start_position
+                    lamp_on = False
+                    message += (
+                        " You respawned at the start; all living enemies "
+                        "returned to full HP."
+                    )
             continue
 
         if not command or any(step not in DIRECTIONS for step in command):
-            controls = "W, A, S, D, R, L, M, or Q"
+            controls = "W, A, S, D, R, I, M, or Q"
+            if player_state.upgrades["lamp"]:
+                controls += ", or L"
             if player_state.upgrades["sword"]:
                 controls += ", or T"
             message = f"Enter {controls}."
-            continue
-
-        required_stamina = len(command) * MOVEMENT_STAMINA_COST
-        if player_state.stamina < required_stamina:
-            message = (
-                f"You need {required_stamina} stamina for that movement "
-                f"but only have {player_state.stamina}."
-            )
             continue
 
         if len(command) > 1:
@@ -1267,17 +1614,22 @@ def play_level(level_number, player_state):
                     f"{player_state.speed_max_steps} moves at once."
                 )
                 continue
-            if player_state.speed_uses == 0:
-                message = "You have no Speed uses left this level."
-                continue
-            player_state.speed_uses -= 1
+
+        required_stamina = player_state.movement_stamina_cost(len(command))
+        if player_state.stamina < required_stamina:
+            message = (
+                f"You need {required_stamina} stamina for that movement "
+                f"but only have {player_state.stamina}."
+            )
+            continue
+        player_state.stamina -= required_stamina
 
         action_messages = []
         level_complete = False
         stop_moving = False
+        player_was_defeated = False
 
         for step in command:
-            player_state.stamina -= MOVEMENT_STAMINA_COST
             facing = DIRECTIONS[step]
             dx, dy = facing
             px, py = player
@@ -1303,23 +1655,9 @@ def play_level(level_number, player_state):
             enemy = enemies.get((nx, ny))
             if enemy is not None:
                 discovered_npcs.add((nx, ny))
-                died, contact_message = player_state.take_damage(
-                    enemy.contact_damage
-                )
                 action_messages.append(
-                    f"The {enemy.name} attacked on contact. {contact_message}"
+                    f"You engage the {enemy.name} with a contact-trivia attack."
                 )
-
-                if died:
-                    player_state.respawn()
-                    reset_enemy_health(enemies)
-                    player = start_position
-                    lamp_on = False
-                    action_messages.append(
-                        "You respawned at the start with full HP and stamina; "
-                        "all living enemies returned to full HP."
-                    )
-                    break
 
                 draw(
                     maze,
@@ -1338,26 +1676,22 @@ def play_level(level_number, player_state):
                 )
                 outcome = ask_trivia_question(enemy, player_state)
 
-                if outcome == "defeated":
-                    del enemies[(nx, ny)]
-                    maze[ny][nx] = FLOOR
-                    player = (nx, ny)
-                    action_messages.append(
-                        f"The {enemy.name} disappeared and you moved forward."
-                    )
-                elif outcome == "dead":
-                    player_state.respawn()
-                    reset_enemy_health(enemies)
-                    player = start_position
-                    lamp_on = False
-                    action_messages.append(
-                        "A wrong answer defeated you. "
-                        "You respawned at the start with full HP and stamina; "
-                        "all living enemies returned to full HP."
-                    )
+                if outcome == "correct":
+                    if apply_trivia_hit(enemy):
+                        del enemies[(nx, ny)]
+                        maze[ny][nx] = FLOOR
+                        player = (nx, ny)
+                        action_messages.append(
+                            f"The {enemy.name} was defeated and you moved forward."
+                        )
+                    else:
+                        action_messages.append(
+                            f"The {enemy.name} has "
+                            f"{enemy.hp}/{enemy.max_hp} HP left."
+                        )
                 else:
                     action_messages.append(
-                        f"The {enemy.name} still blocks that tile."
+                        f"Your attack missed. The {enemy.name} still blocks that tile."
                     )
                 stop_moving = True
                 break
@@ -1367,26 +1701,6 @@ def play_level(level_number, player_state):
                 break
 
             player = (nx, ny)
-
-            died, ranged_messages = ranged_enemy_attacks(
-                enemies,
-                player,
-                discovered_npcs,
-                player_state,
-            )
-            if ranged_messages:
-                action_messages.extend(ranged_messages)
-                if died:
-                    player_state.respawn()
-                    reset_enemy_health(enemies)
-                    player = start_position
-                    lamp_on = False
-                    action_messages.append(
-                        "You respawned at the start with full HP and stamina; "
-                        "all living enemies returned to full HP."
-                    )
-                stop_moving = True
-                break
 
             if player in items:
                 item = items.pop(player)
@@ -1405,6 +1719,26 @@ def play_level(level_number, player_state):
 
         if level_complete:
             return "complete"
+
+        if not player_was_defeated:
+            died, enemy_messages = move_enemies_toward_player(
+                maze,
+                enemies,
+                player,
+                discovered_npcs,
+                player_state,
+            )
+            action_messages.extend(enemy_messages)
+            if died:
+                player_state.respawn()
+                reset_enemy_health(enemies)
+                player = start_position
+                lamp_on = False
+                player_was_defeated = True
+                action_messages.append(
+                    "You respawned at the start with full HP and stamina; "
+                    "all living enemies returned to full HP."
+                )
 
         if not action_messages and not stop_moving:
             action_messages.append("You moved.")
@@ -1436,7 +1770,6 @@ def run_self_tests():
             print(f"PASS  {name}")
 
     def test_levels_items_and_enemies():
-        item_count = 0
         enemy_names = set()
 
         for level_number in range(1, len(LEVELS) + 1):
@@ -1455,15 +1788,20 @@ def run_self_tests():
             assert door != key
             assert len(enemies) == 5
             assert all(isinstance(enemy, Enemy) for enemy in enemies.values())
-            item_count += len(items)
+            assert player not in items
+            random_consumables = [
+                item for item in items.values() if isinstance(item, Consumable)
+            ]
+            assert 1 <= len(random_consumables) <= 2
             enemy_names.update(enemy.name for enemy in enemies.values())
 
-        assert item_count == 1
         assert {"Trivia Guard", "Brute", "Quizmaster", "Sentinel", "Warden"} <= (
             enemy_names
         )
         first_level = build_level(1)
         assert first_level[6][(1, 7)].name == "Flashlight"
+        second_level = build_level(2)
+        assert second_level[6][(1, 9)].name == "Sword"
 
     def test_content_extension_points():
         extra_level = LevelDefinition(
@@ -1488,7 +1826,8 @@ def run_self_tests():
         try:
             built = build_level(len(LEVELS))
             assert built[0][1][3] == ITEM_TILE
-            assert len(built[6]) == 1
+            assert built[6][(3, 1)].name == "Extension Token"
+            assert 2 <= len(built[6]) <= 3
             assert len(built[7]) == 2
             assert built[7][(2, 2)].name == "Trivia Guard"
             assert built[7][(4, 2)].name == "Warden"
@@ -1517,12 +1856,17 @@ def run_self_tests():
     def test_items_and_progression():
         player_state = PlayerState()
         assert player_state.max_hp == 5
-        assert player_state.max_stamina == 20
+        assert player_state.max_stamina == 30
         assert player_state.damage == 0
+        initial_choices = available_upgrades(player_state)
+        assert "lamp" in initial_choices
+        assert "lamp_duration" not in initial_choices
+        assert "lamp_diagonal" not in initial_choices
+        assert "sword" not in initial_choices
 
         consumable = Consumable("Test Charge", "Used by the self-test.", amount=3)
         consumable.collect(player_state)
-        assert player_state.consumables["Test Charge"] == 3
+        assert player_state.consumables["test_charge"] == 3
 
         flashlight = build_level(1)[6][(1, 7)]
         flashlight.collect(player_state)
@@ -1531,17 +1875,70 @@ def run_self_tests():
 
         apply_upgrade("hp", player_state)
         apply_upgrade("stamina", player_state)
-        apply_upgrade("sword", player_state)
+        PowerUp("Sword", "Self-test sword.", "sword").collect(player_state)
         apply_upgrade("sword_damage", player_state)
         apply_upgrade("speed", player_state)
         apply_upgrade("armor", player_state)
 
         assert player_state.max_hp == 10
-        assert player_state.max_stamina == 25
+        assert player_state.max_stamina == 35
         assert player_state.damage == 8
         assert player_state.speed_max_steps == 2
-        assert player_state.speed_uses_per_level == 2
+        assert player_state.movement_stamina_cost(2) == 2
+        apply_upgrade("speed", player_state)
+        assert player_state.movement_stamina_cost(2) == 1
         assert player_state.armor_durability == 1
+
+    def test_consumable_menu_and_effects():
+        player_state = PlayerState()
+        player_state.hp = 1
+        player_state.stamina = 7
+        Bomb().collect(player_state)
+        Cookie().collect(player_state)
+        Bomb().collect(player_state)
+
+        assert player_state.item_recency == ["bomb", "cookie"]
+        assert player_state.consumables["bomb"] == 2
+        assert player_state.consumables["cookie"] == 1
+
+        maze = [
+            list("#####"),
+            list("#...#"),
+            list("#####"),
+        ]
+        context = {
+            "maze": maze,
+            "player": (2, 1),
+            "player_state": player_state,
+            "discovered_walls": {(2, 0)},
+        }
+
+        with patch(
+            "builtins.input",
+            side_effect=["2"],
+        ), contextlib.redirect_stdout(io.StringIO()):
+            used, message = use_item_menu(player_state, context)
+        assert used and "restored" in message
+        assert player_state.hp == 5
+        assert "cookie" not in player_state.consumables
+
+        with patch(
+            "builtins.input",
+            side_effect=["1", "w"],
+        ), contextlib.redirect_stdout(io.StringIO()):
+            used, message = use_item_menu(player_state, context)
+        assert used and "destroyed" in message
+        assert maze[0][2] == FLOOR
+        assert player_state.consumables["bomb"] == 1
+        assert (2, 0) not in context["discovered_walls"]
+        assert player_state.stamina == 7
+
+        with patch(
+            "builtins.input",
+            side_effect=["q"],
+        ), contextlib.redirect_stdout(io.StringIO()):
+            used, message = use_item_menu(player_state, context)
+        assert not used and message == "Item menu closed."
 
     def test_light_and_sword_wall_blocking():
         maze = [list(".....") for _ in range(5)]
@@ -1563,6 +1960,15 @@ def run_self_tests():
         ]
         cells = sword_attack_cells(sword_maze, (1, 1), (1, 0), 4)
         assert cells == [(2, 1)]
+
+        attack_maze = [
+            list("#######"),
+            list("#..#..#"),
+            list("#######"),
+        ]
+        assert not enemy_can_attack(attack_maze, (1, 1), (5, 1), 5)
+        attack_maze[1][3] = FLOOR
+        assert enemy_can_attack(attack_maze, (1, 1), (5, 1), 5)
 
     def test_memory_mode():
         player_state = PlayerState()
@@ -1606,17 +2012,94 @@ def run_self_tests():
         assert "80%" in message
 
         ranged_state = PlayerState()
-        ranged_enemy = Enemy("Test Sentinel", 12, 5, 1, 2, 1)
+        apply_upgrade("hp", ranged_state)
+        ranged_enemy = Enemy("Test Sentinel", 12, 5, 2, 1)
         discovered = set()
-        died, messages = ranged_enemy_attacks(
-            {(2, 1): ranged_enemy},
-            (1, 1),
-            discovered,
-            ranged_state,
-        )
-        assert died
+        attack_maze = [
+            list("#####"),
+            list("#.!.#"),
+            list("#####"),
+        ]
+        question = TRIVIA_QUESTIONS[0]
+        with patch.object(random, "choice", return_value=question), patch(
+            "builtins.input", side_effect=["1"]
+        ), contextlib.redirect_stdout(io.StringIO()):
+            died, messages = enemies_attack_in_range(
+                attack_maze,
+                {(2, 1): ranged_enemy},
+                (1, 1),
+                discovered,
+                ranged_state,
+            )
+        assert not died
+        assert ranged_state.hp == 5
         assert (2, 1) in discovered
-        assert "revealed itself" in messages[0]
+        assert "Incorrect" in messages[0]
+
+        with patch.object(random, "choice", return_value=question), patch(
+            "builtins.input", side_effect=["2"]
+        ), contextlib.redirect_stdout(io.StringIO()):
+            died, messages = enemies_attack_in_range(
+                attack_maze,
+                {(2, 1): ranged_enemy},
+                (1, 1),
+                discovered,
+                ranged_state,
+            )
+        assert not died
+        assert messages and "blocked" in messages[0]
+        assert ranged_state.hp == 5
+
+        pursuit_maze = [
+            list("######"),
+            list("#!...#"),
+            list("######"),
+        ]
+        pursuing_enemy = Enemy("Pursuer", 8, 3)
+        pursuit_enemies = {(1, 1): pursuing_enemy}
+        pursuit_state = PlayerState()
+        died, messages = move_enemies_toward_player(
+            pursuit_maze,
+            pursuit_enemies,
+            (4, 1),
+            set(),
+            pursuit_state,
+        )
+        assert not died and not messages
+        assert (2, 1) in pursuit_enemies
+
+        reveal_maze = [
+            list("#####"),
+            list("#.!.#"),
+            list("#####"),
+        ]
+        reveal_enemy = Enemy("Reveal Guard", 8, 3)
+        reveal_enemies = {(2, 1): reveal_enemy}
+        reveal_state = PlayerState()
+        reveal_discovered = set()
+        with patch.object(random, "choice", return_value=question), patch(
+            "builtins.input", side_effect=["1"]
+        ), contextlib.redirect_stdout(io.StringIO()):
+            died, messages = move_enemies_toward_player(
+                reveal_maze,
+                reveal_enemies,
+                (3, 1),
+                reveal_discovered,
+                reveal_state,
+            )
+        assert not died and reveal_state.hp == 2
+        assert messages
+        with patch.object(random, "choice", return_value=question), patch(
+            "builtins.input", side_effect=["2"]
+        ), contextlib.redirect_stdout(io.StringIO()):
+            died, messages = move_enemies_toward_player(
+                reveal_maze,
+                reveal_enemies,
+                (3, 1),
+                reveal_discovered,
+                reveal_state,
+            )
+        assert not died and messages and reveal_state.hp == 2
 
         enemies = {
             (1, 1): Enemy("Damaged Guard", 5),
@@ -1627,17 +2110,24 @@ def run_self_tests():
         reset_enemy_health(enemies)
         assert [enemy.hp for enemy in enemies.values()] == [5, 9]
 
+        trivia_enemy = Enemy("Trivia Target", 8)
+        assert not apply_trivia_hit(trivia_enemy)
+        assert trivia_enemy.hp == 5
+        assert not apply_trivia_hit(trivia_enemy)
+        assert trivia_enemy.hp == 2
+        assert apply_trivia_hit(trivia_enemy)
+
     def test_sword_trivia_gate():
         question = TRIVIA_QUESTIONS[0]
         player_state = PlayerState()
-        apply_upgrade("sword", player_state)
+        PowerUp("Sword", "Self-test sword.", "sword").collect(player_state)
         player_state.start_level()
         maze = [
             list("#####"),
             list("#...#"),
             list("#####"),
         ]
-        enemies = {(2, 1): Enemy("Test Guard", 5)}
+        enemies = {(2, 1): Enemy("Test Guard", 8)}
 
         with patch.object(random, "choice", return_value=question), patch(
             "builtins.input", side_effect=["1"]
@@ -1653,7 +2143,7 @@ def run_self_tests():
 
         assert not died
         assert player_state.hp == 4
-        assert player_state.stamina == 20
+        assert player_state.stamina == 30
         assert enemies
         assert "did not activate" in message
 
@@ -1670,61 +2160,103 @@ def run_self_tests():
             )
 
         assert not died
-        assert player_state.stamina == 15
+        assert player_state.stamina == 25
+        assert enemies[(2, 1)].hp == 3
+        assert "3/8 HP left" in message
+
+        with patch.object(random, "choice", return_value=question), patch(
+            "builtins.input", side_effect=["2", "d"]
+        ), contextlib.redirect_stdout(io.StringIO()):
+            _, message, died = perform_sword_attack(
+                maze,
+                (1, 1),
+                (1, 0),
+                enemies,
+                set(),
+                player_state,
+            )
+
+        assert not died
+        assert player_state.stamina == 20
         assert not enemies
         assert "defeated" in message
 
     def test_movement_rest_speed_and_lamp():
-        player_state = PlayerState()
-        output = io.StringIO()
-        with patch(
-            "builtins.input",
-            side_effect=["w", "r", "m", "m", "q"],
-        ), contextlib.redirect_stdout(output):
-            result = play_level(1, player_state)
+        original_attack = globals()["resolve_enemy_attack"]
+        globals()["resolve_enemy_attack"] = (
+            lambda enemy, state: (False, "Self-test blocked the attack.")
+        )
+        try:
+            player_state = PlayerState()
+            output = io.StringIO()
+            with patch(
+                "builtins.input",
+                side_effect=["w", "r", "m", "m", "q"],
+            ), contextlib.redirect_stdout(output):
+                result = play_level(1, player_state)
 
-        assert result == "quit"
-        assert player_state.stamina == 20
-        assert player_state.upgrades["flashlight"] == 1
-        assert "Map memory turned off" in output.getvalue()
-        assert "Map memory turned on" in output.getvalue()
+            assert result == "quit"
+            assert player_state.stamina == 30
+            assert player_state.upgrades["flashlight"] == 1
+            assert "Map memory turned off" in output.getvalue()
+            assert "Map memory turned on" in output.getvalue()
+            assert output.getvalue().count("Self-test blocked") >= 2
 
-        speed_state = PlayerState()
-        apply_upgrade("speed", speed_state)
-        with patch(
-            "builtins.input", side_effect=["ww", "q"]
-        ), contextlib.redirect_stdout(io.StringIO()):
-            result = play_level(1, speed_state)
+            speed_state = PlayerState()
+            apply_upgrade("speed", speed_state)
+            with patch(
+                "builtins.input", side_effect=["ww", "q"]
+            ), contextlib.redirect_stdout(io.StringIO()):
+                result = play_level(1, speed_state)
 
-        assert result == "quit"
-        assert speed_state.stamina == 18
-        assert speed_state.speed_uses == 1
+            assert result == "quit"
+            assert speed_state.stamina == 28
 
-        lamp_state = PlayerState()
-        with patch(
-            "builtins.input", side_effect=["l", "w", "q"]
-        ), contextlib.redirect_stdout(io.StringIO()):
-            result = play_level(1, lamp_state)
+            lamp_state = PlayerState()
+            apply_upgrade("lamp", lamp_state)
+            with patch(
+                "builtins.input", side_effect=["l", "w", "q"]
+            ), contextlib.redirect_stdout(io.StringIO()):
+                result = play_level(1, lamp_state)
 
-        assert result == "quit"
-        assert lamp_state.lamp_uses == 2
+            assert result == "quit"
+            assert lamp_state.lamp_uses == 2
+
+            item_state = PlayerState()
+            Bomb().collect(item_state)
+            item_output = io.StringIO()
+            with patch(
+                "builtins.input", side_effect=["i", "1", "a", "q"]
+            ), contextlib.redirect_stdout(item_output):
+                result = play_level(1, item_state)
+
+            assert result == "quit"
+            assert "bomb" not in item_state.consumables
+            assert item_state.stamina == item_state.max_stamina
+            assert "Bomb destroyed" in item_output.getvalue()
+        finally:
+            globals()["resolve_enemy_attack"] = original_attack
 
     def test_death_reset_and_discovery():
-        question = TRIVIA_QUESTIONS[0]
         player_state = PlayerState()
-        output = io.StringIO()
+        player_state.hp = 2
+        discovered_walls = {(1, 1)}
+        discovered_npcs = {(2, 1)}
+        remembered_tiles = {(3, 1)}
+        enemy = Enemy("Reset Target", 14)
+        enemy.hp = 2
+        enemies = {(2, 1): enemy}
 
-        with patch.object(random, "choice", return_value=question), patch(
-            "builtins.input",
-            side_effect=["w", "w", "d", "1", "1", "", "q"],
-        ), contextlib.redirect_stdout(output):
-            result = play_level(1, player_state)
+        died, _ = player_state.take_damage(2)
+        assert died
+        player_state.respawn()
+        reset_enemy_health(enemies)
 
-        text = output.getvalue()
-        assert result == "quit"
         assert player_state.hp == player_state.max_hp == 5
-        assert "all living enemies returned to full HP" in text
-        assert "! . . . . . . ." in text
+        assert enemy.hp == enemy.max_hp == 14
+        assert discovered_walls == {(1, 1)}
+        assert discovered_npcs == {(2, 1)}
+        assert remembered_tiles == {(3, 1)}
 
     def test_debug_console_and_upgrade_choice():
         player_state = PlayerState()
@@ -1756,13 +2288,14 @@ def run_self_tests():
         ), contextlib.redirect_stdout(io.StringIO()):
             choose_end_of_level_upgrade(choice_state)
 
-        assert choice_state.upgrades["lamp_duration"] == 1
+        assert choice_state.upgrades["lamp"] == 1
         assert sum(choice_state.upgrades.values()) == 2
 
     tests = [
         ("level validation, items, and enemy types", test_levels_items_and_enemies),
         ("content extension registries", test_content_extension_points),
         ("items and progression math", test_items_and_progression),
+        ("consumable stacking, menu, and effects", test_consumable_menu_and_effects),
         ("light and sword wall blocking", test_light_and_sword_wall_blocking),
         ("persistent map memory", test_memory_mode),
         ("armor, HP, ranged attacks, and reset", test_armor_hp_and_ranged_enemies),
