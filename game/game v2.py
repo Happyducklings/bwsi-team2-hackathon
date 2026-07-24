@@ -493,6 +493,27 @@ LEVEL_MAPS = [
         list("#@......!........#"),
         list("##################"),
     ],
+    [
+        list("####################"),
+        list("#..K...............D"),
+        list("#..#..#..#.....#...#"),
+        list("#..#.....#..#..#...#"),
+        list("#..#..!..#.!.......#"),
+        list("#........#.........#"),
+        list("#..................#"),
+        list("#..###..#..#..#..#.#"),
+        list("#..........#..#....#"),
+        list("#.....!............#"),
+        list("#..#..#..#..#..#...#"),
+        list("#..#.....#..#......#"),
+        list("#..........!.......#"),
+        list("#..................#"),
+        list("#..#..#..#..#..#...#"),
+        list("#..#.....#.....#...#"),
+        list("#.....!............#"),
+        list("#@.................#"),
+        list("####################"),
+    ],
 ]
 
 # Each level owns its map, items, and optional enemy configuration.
@@ -514,6 +535,7 @@ LEVELS = [
     LevelDefinition("Level 3", LEVEL_MAPS[2]),
     LevelDefinition("Level 4", LEVEL_MAPS[3]),
     LevelDefinition("Level 5", LEVEL_MAPS[4]),
+    LevelDefinition("Level 6", LEVEL_MAPS[5]),
 ]
 
 # Add or edit trivia questions here. The answer is the number of the correct choice.
@@ -573,16 +595,21 @@ TRIVIA_QUESTIONS = [
 
 
 # Per-level passwords the player must enter after leaving the SSH challenge
-# container. The values match what's stashed in the per-level Dockerfile
-# layouts; level 1's is the shared `maze2024` baked into the Dockerfile
-# today, and levels 2-5 are placeholders until the team designs those
-# challenges.
+# container. Each value is the flag for that level's Challenges_2 puzzle,
+# baked into the matching per-level Dockerfile home directory:
+#   1: OSINT       - identify the building (Royal Hawaiian Hotel, opened 1927)
+#   2: reversing   - decompile msg and read the compared-against string
+#   3: steganography - openstego door.bmp, then XOR-decode with key 21
+#   4: pwn/ret2win - exploit chal to reach win(), which prints flag.txt
+#   5: reversing   - reverse mystery's ROT13 transform (apply it twice)
+#   6: forensics   - find the ROT13'd flag in capture.pcap's HTTP traffic
 LEVEL_PASSWORDS = {
-    1: "maze2024",
-    2: "tbd-level-2",
-    3: "tbd-level-3",
-    4: "tbd-level-4",
-    5: "tbd-level-5",
+    1: "HWM{1927}",
+    2: "HWM{R3v3rs3d_5ucc3ss}",
+    3: "HWM{Simon_has_cookies?}",
+    4: "HWM{Y0u_g0t_this!}",
+    5: "HWM{1nv35t1g4t1v3_R3v3rs3r!}",
+    6: "HWM{M@k3_1t_th3_b35t_d@y}",
 }
 
 
