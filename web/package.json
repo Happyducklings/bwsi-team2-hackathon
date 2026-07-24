@@ -1,0 +1,14 @@
+{
+  "name": "beast-ctf-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node game-server/server.js",
+    "dev": "node --watch game-server/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

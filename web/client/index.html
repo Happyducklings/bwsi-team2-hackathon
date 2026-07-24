@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#070a12" />
+    <title>Blacksite // CTF Escape</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="scanlines" aria-hidden="true"></div>
+    <main>
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">COOPERATIVE INFILTRATION PROTOCOL</p>
+          <h1>BLACKSITE<span>//CTF</span></h1>
+        </div>
+        <div class="phase-chip" id="phase-chip">OFFLINE</div>
+      </header>
+
+      <section id="join-screen" class="screen centered">
+        <div class="panel join-panel">
+          <p class="panel-label">SECURE CHANNEL</p>
+          <h2>Enter the blacksite.</h2>
+          <p>
+            Solve computer challenges with your team, avoid the Beast, and reach the
+            extraction gate.
+          </p>
+          <form id="join-form">
+            <label for="display-name">OPERATIVE NAME</label>
+            <div class="input-row">
+              <input id="display-name" maxlength="20" autocomplete="nickname" required />
+              <button type="submit">JOIN LOBBY</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section id="game-screen" class="screen hidden">
+        <div class="hud">
+          <div class="hud-card">
+            <span>OBJECTIVE</span>
+            <strong id="objective">Await match start</strong>
+          </div>
+          <div class="hud-card">
+            <span>CTF PROGRESS</span>
+            <strong id="progress">0 / 2</strong>
+          </div>
+          <div class="hud-card">
+            <span>STATUS</span>
+            <strong id="player-status">ALIVE</strong>
+          </div>
+        </div>
+
+        <div class="game-layout">
+          <section class="map-shell">
+            <canvas id="map" width="960" height="600" aria-label="Game map"></canvas>
+            <div id="center-message" class="center-message hidden"></div>
+            <div class="controls-hint">
+              <kbd>WASD</kbd> / <kbd>ARROWS</kbd> move
+              <span>·</span>
+              <kbd>E</kbd> interact
+            </div>
+          </section>
+
+          <aside>
+            <div class="panel roster-panel">
+              <p class="panel-label">TEAM UPLINK</p>
+              <div id="roster"></div>
+              <button id="start-button" class="wide">START MATCH</button>
+              <button id="restart-button" class="wide hidden">RETURN TO LOBBY</button>
+            </div>
+            <div class="panel terminal-list">
+              <p class="panel-label">NETWORK NODES</p>
+              <div id="terminal-status"></div>
+            </div>
+            <div class="panel help-panel">
+              <p class="panel-label">MISSION RULES</p>
+              <p>Reach a terminal and press E. Use its SSH command outside the browser.</p>
+              <p>The Beast eliminates on contact. Eliminated operatives spectate.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="terminal-dialog">
+      <button class="dialog-close" aria-label="Close">×</button>
+      <p class="panel-label">REMOTE TERMINAL</p>
+      <h2 id="challenge-title"></h2>
+      <p id="challenge-state"></p>
+      <label>SSH CONNECTION</label>
+      <div class="copy-row">
+        <code id="ssh-command"></code>
+        <button id="copy-ssh" type="button">COPY</button>
+      </div>
+      <form id="flag-form">
+        <label for="flag-input">SUBMIT FLAG</label>
+        <div class="input-row">
+          <input id="flag-input" autocomplete="off" maxlength="200" />
+          <button type="submit">VERIFY</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
