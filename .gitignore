@@ -1,3 +1,6 @@
 .DS_Store
 __pycache__/
 *.py[cod]
+
+# Player-side challenge files pulled down by download.sh
+downloads/

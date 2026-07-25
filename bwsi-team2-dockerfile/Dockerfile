@@ -69,6 +69,7 @@ COPY --chown=level3:level3 challenges/challenge3/README.txt challenges/challenge
 # flag.txt (mode 400), so `cat flag.txt` as level4 fails with Permission
 # denied — only win() (running as ctf4 via setuid) can read and print it.
 RUN useradd -r -s /usr/sbin/nologin ctf4
+COPY --chown=level4:level4 challenges/challenge4/README.txt /home/level4/README.txt
 COPY --chown=level4:level4 challenges/src/ret2win.c /home/level4/ret2win.c
 RUN cp /opt/challenge-src/chal /home/level4/chal && \
     printf 'HWM{Y0u_g0t_this!}\n' > /home/level4/flag.txt && \
