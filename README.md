@@ -57,4 +57,7 @@ Troubleshooting
 python3: command not found — try python gamefinalfinal.py, or reinstall Python and make sure it's on your PATH.
 Screen looks garbled — maximize the terminal window and run it directly in Terminal (macOS), a Linux shell, or Command Prompt / PowerShell (Windows).
 
+### Some Notices
+You may need to complete some challenges outside of the given shell environment. You will have to copy the data into your local machine
+
 
