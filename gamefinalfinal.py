@@ -690,6 +690,86 @@ TRIVIA_QUESTIONS = [
         "choices": ["Extra Buttons", "Bold text", "Bright colors", "Misspelled domain"],
         "answer": 4,
     },
+    {
+    "question": "Which password is the strongest?",
+    "choices": ["password123", "John2008", "Q7!mZ2@pL9", "abcdefg"],
+    "answer": 3,
+    },
+    {
+    "question": "Which vulnerability allows an attacker to execute unintended database commands through user input?",
+    "choices": ["SQL Injection", "DNS Spoofing", "ARP Poisoning", "Session Fixation"],
+    "answer": 1,
+    },
+    {
+    "question": "What security principle gives users only the permissions required for their tasks?",
+    "choices": ["Defense in Depth", "Least Privilege", "Zero Trust", "Nonrepudiation"],
+    "answer": 2,
+    },
+    {
+    "question": "What does a cryptographic hash primarily provide?",
+    "choices": ["Confidentiality", "Integrity verification", "User authentication", "Network availability"],
+    "answer": 2,
+    },
+    {
+    "question": "What is the main purpose of salting stored passwords?",
+    "choices": ["Make passwords shorter", "Prevent identical hashes and rainbow table attacks", "Encrypt network traffic", "Block phishing emails"],
+    "answer": 2,
+    },
+    {
+    "question": "Which protocol securely replaces Telnet for remote command line access?",
+    "choices": ["FTP", "SSH", "SNMP", "HTTP"],
+    "answer": 2,
+    },
+    {
+    "question": "Which attack attempts a small set of common passwords across many accounts?",
+    "choices": ["Credential stuffing", "Password spraying", "Rainbow table attack", "Session hijacking"],
+    "answer": 2,
+    },
+    {
+    "question": "What is the purpose of a digital signature?",
+    "choices": ["Hide the message contents", "Verify authenticity and integrity", "Compress the message", "Prevent all malware"],
+    "answer": 2,
+    },
+    {
+    "question": "Which vulnerability allows access to files outside an intended web directory?",
+    "choices": ["Directory traversal", "Cross site request forgery", "DNS poisoning", "Integer overflow"],
+    "answer": 1,
+    },
+    {
+    "question": "Which attack forces a logged in user's browser to submit an unwanted request?",
+    "choices": ["Cross Site Request Forgery", "SQL Injection", "ARP Spoofing", "Buffer Overflow"],
+    "answer": 1,
+    },
+    {
+    "question": "What is the main risk of using ECB mode for block cipher encryption?",
+    "choices": ["It reveals patterns in repeated plaintext blocks", "It cannot encrypt text", "It requires no key", "It automatically deletes data"],
+    "answer": 1,
+    },
+    {
+    "question": "Which country is commonly associated with the creation of the Stuxnet malware?",
+    "choices": ["Canada", "Brazil", "United States and Israel", "Australia"],
+    "answer": 3,
+    },
+    {
+    "question": "What is the name of the annual cybersecurity conference held in Las Vegas?",
+    "choices": ["DEF CON", "CyberFest", "HackWorld", "SecureCon"],
+    "answer": 1,
+    },
+    {
+    "question": "Which malware was designed to target Iran’s nuclear centrifuges?",
+    "choices": ["WannaCry", "Stuxnet", "Mydoom", "Conficker"],
+    "answer": 2,
+    },
+    {
+    "question": "What was the first experimental self-replicating program on ARPANET called?",
+    "choices": ["Creeper", "Melissa", "Brain", "Zeus"],
+    "answer": 1,
+    },
+    {
+    "question": "What physical insect inspired the computer term bug?",
+    "choices": ["Beetle", "Ant", "Fly", "Moth"],
+    "answer": 4,
+    },
 ]
 
 
