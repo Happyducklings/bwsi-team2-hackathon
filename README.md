@@ -6,8 +6,6 @@ A seemingly simple game about messing with mazes and fending against foes, but m
 "Dont hack us, we byte back is such a bar :D"
  ...Hidden Wall Maze Team, BWSI '26
 
- The terminal game is pure Python standard library — no pip install, no requirements.txt, entry point is gamefinalfinal.py. Here's a ready-to-paste README section:
-
 
 ## Download & Play the Terminal CTF Game
 
